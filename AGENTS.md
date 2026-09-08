@@ -672,9 +672,13 @@ Tests must call `app.run(argv)` and capture output using `contextlib.redirect_st
 - Dataclasses and enums serialize as documented.
 - Unknown objects fall back to `str()`.
 
-## README requirements
+## Documentation requirements
 
-Write `README.md` covering:
+Maintain both `README.md` (English) and `README.zh-CN.md` (Simplified Chinese).
+The two files must link to each other near the top and must remain synchronized
+when behavior, examples, supported versions, testing, or limitations change.
+
+Both READMEs must cover:
 
 - One-sentence purpose.
 - Single-file and zero-dependency guarantee.
@@ -699,6 +703,55 @@ Write `README.md` covering:
 
 Use examples relevant to skill scripts: file inspection, JSON transformation, repository utilities, or structured output. Include at least one example with a nested command path.
 
+## Type and compatibility discipline
+
+`zerocli` is itself a typed library, not only a library that consumes user type
+annotations. Treat its annotations and generated CLI type behavior as stable,
+reviewable contracts.
+
+- Add annotations to public APIs and internal helpers. Avoid unbounded `Any`
+  where a useful concrete type can be stated without making the single-file
+  implementation harder to understand.
+- On Python 3.10+, import runtime collection protocols such as `Callable` and
+  `Sequence` from `collections.abc`. Use `typing` for facilities such as `Any`,
+  `Annotated`, `get_args`, `get_origin`, and `get_type_hints`.
+- Keep all syntax and standard-library usage compatible with Python 3.10. A
+  change that passes only on the developer's newest Python is not acceptable.
+- Keep the distinction between the framework's own annotations and supported
+  user callback annotations explicit. Extending either surface requires tests.
+- Unsupported callback annotations must fail at registration time with a clear
+  `TypeError`; they must not silently degrade into surprising string parsing.
+- Default positional metavars use the Python parameter name so multiple values
+  of the same type remain distinguishable (`source destination`, not
+  `PATH PATH`). Options may use type-oriented metavars such as `INT` and `PATH`.
+  Explicit `Argument(metavar=...)` and `Option(metavar=...)` metadata override
+  those defaults.
+- Tests for help output must assert the relevant usage line or argument section
+  precisely. Do not use a substring assertion that can accidentally match a
+  docstring or unrelated help text.
+
+Do not add a mandatory external type checker: the repository must retain its
+zero-third-party-dependency test policy. Type-focused behavior is enforced with
+`unittest`, Python 3.10-compatible syntax checks, and the CI version matrix.
+
+## Project maintenance foundations
+
+- Keep `.github/workflows/ci.yml` running the full standard-library test suite
+  on Python 3.10, 3.11, 3.12, 3.13, and 3.14 for pushes and pull requests.
+- CI must also smoke-test the documented example command paths. Updating an
+  example requires updating its smoke test when the invocation changes.
+- Keep at least one executable public-API doctest in `zerocli.py`. It must be
+  integrated into `python -m unittest discover -v`, and the suite must contain
+  a guard that fails if all doctest examples are accidentally removed.
+- Keep realistic scripts under `examples/`; examples are part of the supported
+  documentation surface and must use only the public API.
+- Never commit generated `__pycache__`, `.pyc`, coverage, or temporary files.
+- Before reporting completion, run the complete unit/doctest suite, the example
+  smoke commands, a Python 3.10 syntax compatibility check, and
+  `git diff --check`.
+- When asked to commit in this repository, use repository-local identity
+  `Anonymous <anonymous@localhost>`. Never change the user's global Git identity.
+
 ## Acceptance criteria
 
 The project is ready when:
@@ -719,6 +772,10 @@ The project is ready when:
 
 10. Documentation does not claim Fire/Typer compatibility.
 11. The implementation contains no external runtime or test dependency.
+12. English and Simplified Chinese READMEs are synchronized and mutually linked.
+13. The public doctest is non-empty and runs through unittest discovery.
+14. CI tests every supported Python minor version from 3.10 through 3.14 and
+    smoke-tests the examples.
 
 ## Recommended development order
 
@@ -744,6 +801,8 @@ At every step, add tests before broadening scope.
 - Begin by proposing the repository layout and an implementation plan tied to the acceptance criteria.
 - Implement a minimal vertical slice first and run tests immediately.
 - Do not add external dependencies, including test-only dependencies.
+- Follow the type, compatibility, documentation, doctest, example, and CI
+  foundations above for every change, not only for release work.
 - Prefer behavior inferable from a function signature.
 - Keep nested routing recursive and data-driven; do not special-case particular command names or depths.
 - Do not execute callbacks when building parsers.
@@ -756,6 +815,8 @@ At every step, add tests before broadening scope.
 
 - `zerocli.py`: complete single-file runtime library.
 - `tests/test_zerocli.py`: standard-library `unittest` coverage.
-- `README.md`: usage and limitations.
+- `tests/test_doctest.py`: doctest integration and non-empty-example guard.
+- `README.md` and `README.zh-CN.md`: synchronized usage and limitations.
 - `examples/files.py` or equivalent: realistic no-subcommand and/or nested-command skill example.
+- `.github/workflows/ci.yml`: Python 3.10-3.14 unit and smoke-test matrix.
 - A short final implementation note with API decisions, nested command behavior, group-default behavior, list syntax, limitations, and test results.
