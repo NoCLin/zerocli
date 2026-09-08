@@ -34,7 +34,7 @@ import typing
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 
 class _Missing:
@@ -47,7 +47,7 @@ MISSING = _Missing()
 
 @dataclass(frozen=True)
 class _ParameterMetadata:
-    kind: str
+    kind: Literal["argument", "option"]
     default: Any = MISSING
     help: str | None = None
     metavar: str | None = None
@@ -68,9 +68,14 @@ def Option(
 ) -> Any:
     """Describe an option inside ``typing.Annotated``."""
     if short is not None and (
-        len(short) != 2 or not short.startswith("-") or short.startswith("--")
+        len(short) != 2
+        or not short.startswith("-")
+        or short.startswith("--")
+        or short[1].isspace()
     ):
         raise ValueError("an option short name must look like '-x'")
+    if short == "-h":
+        raise ValueError("reserved option '-h' cannot be used as a short name")
     return _ParameterMetadata(
         "option", default=default, help=help, metavar=metavar, short=short
     )
@@ -94,7 +99,7 @@ class _Parameter:
 @dataclass
 class _Node:
     name: str
-    kind: str
+    kind: Literal["root", "group", "command"]
     parent: _Node | None = None
     help: str | None = None
     callback: Callable[..., Any] | None = None
@@ -128,22 +133,27 @@ def _validate_name(name: str, *, what: str) -> str:
 
 def _unwrap_annotation(annotation: Any) -> tuple[Any, _ParameterMetadata | None]:
     metadata: _ParameterMetadata | None = None
-    if typing.get_origin(annotation) is typing.Annotated:
-        annotated_type, *extras = typing.get_args(annotation)
-        relevant = [item for item in extras if isinstance(item, _ParameterMetadata)]
-        if len(relevant) > 1:
-            raise TypeError("a parameter may have only one Argument or Option metadata item")
-        annotation = annotated_type
-        metadata = relevant[0] if relevant else None
-
-    origin = typing.get_origin(annotation)
-    if origin in (typing.Union, types.UnionType):
-        members = typing.get_args(annotation)
-        non_none = [member for member in members if member is not type(None)]
-        if len(non_none) == 1 and len(non_none) != len(members):
-            annotation = non_none[0]
-        else:
+    while True:
+        origin = typing.get_origin(annotation)
+        if origin is typing.Annotated:
+            annotated_type, *extras = typing.get_args(annotation)
+            relevant = [item for item in extras if isinstance(item, _ParameterMetadata)]
+            if len(relevant) + (metadata is not None) > 1:
+                raise TypeError(
+                    "a parameter may have only one Argument or Option metadata item"
+                )
+            annotation = annotated_type
+            if relevant:
+                metadata = relevant[0]
+            continue
+        if origin in (typing.Union, types.UnionType):
+            members = typing.get_args(annotation)
+            non_none = [member for member in members if member is not type(None)]
+            if len(non_none) == 1 and len(non_none) != len(members):
+                annotation = non_none[0]
+                continue
             raise TypeError(f"unsupported union annotation: {annotation!r}")
+        break
     return annotation, metadata
 
 
@@ -225,6 +235,11 @@ def _parameters_for(func: Callable[..., Any], path: str) -> list[_Parameter]:
             raise TypeError(
                 f"{path or '<root>'}: boolean parameter {raw.name!r} must be an option"
             )
+        if is_bool and default is MISSING:
+            raise TypeError(
+                f"{path or '<root>'}: required boolean parameter {raw.name!r} has no "
+                "representable CLI form; give it a default"
+            )
 
         result.append(
             _Parameter(
@@ -244,6 +259,37 @@ def _parameters_for(func: Callable[..., Any], path: str) -> list[_Parameter]:
     return result
 
 
+def _option_strings(parameter: _Parameter) -> list[str]:
+    if not parameter.is_option:
+        return []
+    long_name = "--" + _kebab_case(parameter.name)
+    if parameter.is_bool and parameter.default is True:
+        long_name = "--no-" + _kebab_case(parameter.name)
+    names = [long_name]
+    if parameter.short is not None:
+        names.insert(0, parameter.short)
+    return names
+
+
+def _validate_option_strings(
+    parameters: Sequence[_Parameter],
+    path: str,
+    *,
+    reserved: Sequence[str] = (),
+) -> None:
+    location = path or "<root>"
+    seen = {"-h": "built-in help", "--help": "built-in help"}
+    seen.update((option, "reserved option") for option in reserved)
+    for parameter in parameters:
+        for option in _option_strings(parameter):
+            previous = seen.get(option)
+            if previous is not None:
+                raise ValueError(
+                    f"option {option!r} at {location!r} conflicts with {previous}"
+                )
+            seen[option] = f"parameter {parameter.name!r}"
+
+
 def _enum_converter(enum_type: type[enum.Enum]) -> Callable[[str], enum.Enum]:
     def convert(value: str) -> enum.Enum:
         for member in enum_type:
@@ -259,7 +305,7 @@ def _enum_converter(enum_type: type[enum.Enum]) -> Callable[[str], enum.Enum]:
 def _converter(annotation: Any) -> Callable[[str], Any]:
     if _is_enum_type(annotation):
         return _enum_converter(annotation)
-    return annotation
+    return cast(Callable[[str], Any], annotation)
 
 
 def _default_metavar(annotation: Any) -> str:
@@ -318,6 +364,12 @@ class Group:
     def __call__(self, func: Callable[..., Any]) -> Group:
         if self._node.declaration is not None:
             raise ValueError(f"group {self._node.path!r} is already declared")
+        if inspect.signature(func).parameters:
+            location = self._node.path or _kebab_case(func.__name__)
+            raise TypeError(
+                f"{location}: group declaration must accept no parameters; "
+                "use @group.default for executable group behavior"
+            )
         if not self._node.name:
             self._node.name = _validate_name(_kebab_case(func.__name__), what="group")
             assert self._node.parent is not None
@@ -335,10 +387,16 @@ class Group:
         self, name: str | None = None, help: str | None = None
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         self._require_name()
+        if callable(name):
+            raise TypeError(
+                "@group.command must be called with parentheses; use @group.command()"
+            )
         return self._app._command_decorator(self._node, name, help)
 
     def group(self, name: str | None = None, help: str | None = None) -> Group:
         self._require_name()
+        if callable(name):
+            raise TypeError("@group.group must be called with parentheses; use @group.group()")
         return self._app._make_group(self._node, name, help)
 
     def main(self, func: Callable[..., Any]) -> Callable[..., Any]:
@@ -388,7 +446,9 @@ class App:
                 help=help if help is not None else inspect.getdoc(func),
                 callback=func,
             )
-            node.parameters = _parameters_for(func, node.path)
+            parameters = _parameters_for(func, node.path)
+            _validate_option_strings(parameters, node.path)
+            node.parameters = parameters
             self._add_child(parent, node)
             return func
 
@@ -397,6 +457,10 @@ class App:
     def command(
         self, name: str | None = None, help: str | None = None
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        if callable(name):
+            raise TypeError(
+                "@app.command must be called with parentheses; use @app.command()"
+            )
         return self._command_decorator(self._root, name, help)
 
     def _make_group(
@@ -409,13 +473,18 @@ class App:
         return Group(self, node)
 
     def group(self, name: str | None = None, help: str | None = None) -> Group:
+        if callable(name):
+            raise TypeError("@app.group must be called with parentheses; use @app.group()")
         return self._make_group(self._root, name, help)
 
     def _set_default(self, node: _Node, func: Callable[..., Any]) -> None:
         if node.callback is not None:
             location = node.path or "<root>"
             raise ValueError(f"a default callback is already registered at {location!r}")
-        node.parameters = _parameters_for(func, node.path)
+        parameters = _parameters_for(func, node.path)
+        reserved = ("--version",) if node is self._root and self.version is not None else ()
+        _validate_option_strings(parameters, node.path, reserved=reserved)
+        node.parameters = parameters
         node.callback = func
 
     def main(self, func: Callable[..., Any]) -> Callable[..., Any]:
@@ -435,7 +504,7 @@ class App:
             remaining = remaining[1:]
         return node, remaining
 
-    def _prog_for(self, node: _Node) -> str | None:
+    def _prog_for(self, node: _Node) -> str:
         base = self.name or Path(sys.argv[0]).name
         if node.path:
             return f"{base} {node.path}"
@@ -448,7 +517,7 @@ class App:
         width = max(len(name) for name in node.children)
         lines = ["commands:"]
         for name, child in node.children.items():
-            description = child.help or ""
+            description = child.help.splitlines()[0] if child.help else ""
             lines.append(f"  {name:<{width}}  {description}".rstrip())
         return "\n".join(lines)
 
@@ -461,6 +530,7 @@ class App:
             description=description,
             epilog=self._children_epilog(node),
             formatter_class=argparse.RawDescriptionHelpFormatter,
+            allow_abbrev=False,
         )
         if node is self._root and self.version is not None:
             parser.add_argument("--version", action="version", version=self.version)
@@ -483,12 +553,12 @@ class App:
             raise ValueError("no command or default callback is registered")
         node, remaining = self._select_node(arguments)
         parser = self._parser_for(node)
-        if node.callback is None and node.children and not remaining:
+        if node.callback is None and not remaining:
             parser.print_help()
             return None
         namespace = parser.parse_args(remaining)
         if node.callback is None:
-            return None
+            parser.error("a subcommand must be specified directly (without '--')")
         result = node.callback(**vars(namespace))
         _render_result(result)
         return result
@@ -497,26 +567,60 @@ class App:
         self.run()
 
 
-def _json_default(value: Any) -> Any:
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return dataclasses.asdict(value)
+def _json_key(value: Any) -> str:
     if isinstance(value, enum.Enum):
-        return value.value
+        value = value.value
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value, allow_nan=False)
+    return str(value)
+
+
+def _json_value(value: Any) -> Any:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return _json_value(dataclasses.asdict(value))
+    if isinstance(value, enum.Enum):
+        return _json_value(value.value)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        normalized: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized_key = _json_key(key)
+            if normalized_key in normalized:
+                raise ValueError(
+                    f"JSON key collision after normalization: {normalized_key!r}"
+                )
+            normalized[normalized_key] = _json_value(item)
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
     return str(value)
 
 
 def _render_result(value: Any) -> None:
     if value is None:
         return
+    if isinstance(value, enum.Enum):
+        _render_result(value.value)
+        return
     if isinstance(value, (dict, list, tuple)) or (
         dataclasses.is_dataclass(value) and not isinstance(value, type)
     ):
-        print(json.dumps(value, ensure_ascii=False, indent=2, default=_json_default))
-        return
-    if isinstance(value, enum.Enum):
-        print(value.value)
+        print(
+            json.dumps(
+                _json_value(value), ensure_ascii=False, indent=2, allow_nan=False
+            )
+        )
         return
     print(value)
 

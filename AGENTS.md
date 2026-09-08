@@ -721,6 +721,12 @@ reviewable contracts.
   user callback annotations explicit. Extending either surface requires tests.
 - Unsupported callback annotations must fail at registration time with a clear
   `TypeError`; they must not silently degrade into surprising string parsing.
+- Boolean parameters must have a default so the generated flag represents a
+  reversible change from that default. Reject required booleans at registration
+  time because a presence-only flag cannot express both values.
+- Supported annotation wrappers must compose in any legal nesting order. In
+  particular, test both `Annotated[Optional[T], ...]` and
+  `Optional[Annotated[T, ...]]` whenever normalization changes.
 - Default positional metavars use the Python parameter name so multiple values
   of the same type remain distinguishable (`source destination`, not
   `PATH PATH`). Options may use type-oriented metavars such as `INT` and `PATH`.
@@ -729,6 +735,23 @@ reviewable contracts.
 - Tests for help output must assert the relevant usage line or argument section
   precisely. Do not use a substring assertion that can accidentally match a
   docstring or unrelated help text.
+- Disable argparse long-option abbreviation. Every documented option has one
+  exact long spelling (plus an explicit short option, if configured).
+- Validate every generated option string at registration time. Reject duplicate
+  long or short flags and conflicts with `-h`, `--help`, or a configured root
+  `--version`; errors must identify the command path and conflicting spelling.
+- Group declaration functions are documentation-only and must have no
+  parameters. Put executable behavior in `@group.default`.
+- A group without a default always prints its help when invoked without a child,
+  even if it has no children. Never allow a routing form such as `-- CHILD` to
+  parse successfully without dispatching a callback.
+- Decorator misuse must produce an actionable error showing the supported
+  spelling, such as `@app.command()` rather than bare `@app.command`.
+- Group command listings use only the first line of each child description;
+  full multi-paragraph documentation belongs on the child's own help page.
+- Structured return values must produce strict JSON. Reject NaN and Infinity,
+  normalize nested values and mapping keys deterministically, and detect key
+  collisions after JSON key coercion rather than emitting duplicate keys.
 
 Do not add a mandatory external type checker: the repository must retain its
 zero-third-party-dependency test policy. Type-focused behavior is enforced with
@@ -739,13 +762,17 @@ zero-third-party-dependency test policy. Type-focused behavior is enforced with
 - Keep `.github/workflows/ci.yml` running the full standard-library test suite
   on Python 3.10, 3.11, 3.12, 3.13, and 3.14 for pushes and pull requests.
 - CI must also smoke-test the documented example command paths. Updating an
-  example requires updating its smoke test when the invocation changes.
+  example requires updating its smoke test when the invocation changes; keep
+  root commands, group defaults, nested commands, and representative help paths
+  covered.
 - Keep at least one executable public-API doctest in `zerocli.py`. It must be
   integrated into `python -m unittest discover -v`, and the suite must contain
   a guard that fails if all doctest examples are accidentally removed.
 - Keep realistic scripts under `examples/`; examples are part of the supported
   documentation surface and must use only the public API.
 - Never commit generated `__pycache__`, `.pyc`, coverage, or temporary files.
+- Maintain `.gitignore` entries for Python bytecode and coverage artifacts, and
+  confirm `git status --short` contains no generated files before committing.
 - Before reporting completion, run the complete unit/doctest suite, the example
   smoke commands, a Python 3.10 syntax compatibility check, and
   `git diff --check`.

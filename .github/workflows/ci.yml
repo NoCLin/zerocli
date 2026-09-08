@@ -11,6 +11,7 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -31,5 +32,8 @@ jobs:
       - name: Smoke-test example commands
         run: |
           python -m examples.files --help
+          python -m examples.files summarize README.md --max-lines 1
+          python -m examples.files repo
           python -m examples.files repo --help
+          python -m examples.files repo find examples --pattern '*.py'
           python -m examples.files repo git status --short

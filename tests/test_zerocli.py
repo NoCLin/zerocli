@@ -186,6 +186,12 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "boolean"):
             App("tool").main(positional_bool)
 
+        def required_bool(*, verbose: bool):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "required boolean.*default"):
+            App("tool").main(required_bool)
+
     def test_positional_only_and_unresolvable_annotations_are_rejected(self):
         def positional_only(value, /):
             pass
@@ -197,6 +203,61 @@ class RegistrationTests(unittest.TestCase):
             App("tool").main(positional_only)
         with self.assertRaisesRegex(TypeError, "cannot resolve annotations"):
             App("tool").main(unresolved)
+
+    def test_group_declarations_must_not_accept_parameters(self):
+        app = App("tool")
+        repo = app.group("repo")
+
+        def invalid_group(unused: str):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "group declaration.*no parameters"):
+            repo(invalid_group)
+
+    def test_bare_command_and_group_decorators_have_actionable_errors(self):
+        app = App("tool")
+
+        def callback():
+            pass
+
+        with self.assertRaisesRegex(TypeError, r"@app\.command\(\)"):
+            app.command(callback)
+        with self.assertRaisesRegex(TypeError, r"@app\.group\(\)"):
+            app.group(callback)
+
+        repo = app.group("repo")
+        with self.assertRaisesRegex(TypeError, r"@group\.command\(\)"):
+            repo.command(callback)
+        with self.assertRaisesRegex(TypeError, r"@group\.group\(\)"):
+            repo.group(callback)
+
+    def test_option_flag_conflicts_fail_during_registration(self):
+        with self.assertRaisesRegex(ValueError, "reserved.*-h"):
+            Option(short="-h")
+
+        def duplicate_short(
+            first: Annotated[int, Option(short="-x")] = 1,
+            second: Annotated[int, Option(short="-x")] = 2,
+        ):
+            pass
+
+        with self.assertRaisesRegex(ValueError, "-x.*<root>"):
+            App("tool").main(duplicate_short)
+
+        def duplicate_long(cache: bool = True, no_cache: str = "yes"):
+            pass
+
+        with self.assertRaisesRegex(ValueError, "--no-cache.*<root>"):
+            App("tool").main(duplicate_long)
+
+    def test_root_version_option_conflict_fails_during_registration(self):
+        app = App("tool", version="tool 1.0")
+
+        def root(version: str = "local"):
+            pass
+
+        with self.assertRaisesRegex(ValueError, "--version.*<root>"):
+            app.main(root)
 
 
 class RootCommandTests(unittest.TestCase):
@@ -302,6 +363,19 @@ class CommandRoutingTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("invalid choice", error)
 
+    def test_double_dash_cannot_silently_bypass_subcommand_routing(self):
+        app = App("tool")
+        repo = app.group("repo")
+        app.command("run")(lambda: "root child")
+        repo.command("find")(lambda: "nested child")
+
+        for argv in (["--", "run"], ["repo", "--", "find"]):
+            with self.subTest(argv=argv):
+                code, output, error = invoke_exit(app, argv)
+                self.assertEqual(code, 2)
+                self.assertEqual(output, "")
+                self.assertIn("subcommand must be specified directly", error)
+
     def test_command_help_lists_arguments(self):
         app = App("tool")
 
@@ -357,6 +431,23 @@ class CommandRoutingTests(unittest.TestCase):
         self.assertIn("tool repo git", git_help)
         self.assertIn("status", git_help)
 
+    def test_group_help_uses_only_first_line_of_child_description(self):
+        app = App("tool")
+        repo = app.group("repo")
+
+        @repo.command("find")
+        def find():
+            """Find files.
+
+            This longer explanation belongs on leaf help only.
+            """
+
+        _, group_help, _ = invoke_exit(app, ["repo", "--help"])
+        self.assertIn("find  Find files.", group_help)
+        self.assertNotIn("longer explanation", group_help)
+        _, leaf_help, _ = invoke_exit(app, ["repo", "find", "--help"])
+        self.assertIn("longer explanation", leaf_help)
+
     def test_pure_group_without_child_prints_help_successfully(self):
         app = App("tool")
         repo = app.group("repo")
@@ -364,6 +455,15 @@ class CommandRoutingTests(unittest.TestCase):
         result, output, error = invoke(app, ["repo"])
         self.assertIsNone(result)
         self.assertIn("find", output)
+        self.assertEqual(error, "")
+
+    def test_empty_group_without_default_prints_help_successfully(self):
+        app = App("tool")
+        app.group("empty", help="An intentionally empty namespace")
+        result, output, error = invoke(app, ["empty"])
+        self.assertIsNone(result)
+        self.assertIn("usage: tool empty", output)
+        self.assertIn("An intentionally empty namespace", output)
         self.assertEqual(error, "")
 
     def test_unknown_nested_child_is_argparse_error(self):
@@ -434,6 +534,17 @@ class ParameterTests(unittest.TestCase):
             invoke(app, ["--max-lines=5", "--ratio", "2.5", "--label=y"])[0],
             (5, 2.5, "y"),
         )
+
+    def test_long_option_abbreviations_are_rejected(self):
+        app = App("tool")
+
+        @app.main
+        def values(max_lines: int = 20):
+            return max_lines
+
+        code, _, error = invoke_exit(app, ["--max-l", "5"])
+        self.assertEqual(code, 2)
+        self.assertIn("unrecognized arguments", error)
 
     def test_required_keyword_only_option(self):
         app = App("tool")
@@ -547,6 +658,38 @@ class ParameterTests(unittest.TestCase):
         self.assertIn("-r", output)
         self.assertIn("Retry count", output)
 
+    def test_optional_and_annotated_wrappers_compose_in_either_order(self):
+        outer = App("outer")
+
+        @outer.main
+        def outer_metadata(
+            value: Annotated[Optional[int], Option(short="-v")] = None,
+        ):
+            return value
+
+        inner = App("inner")
+
+        @inner.main
+        def inner_metadata(
+            value: Optional[Annotated[int, Option(short="-v")]] = None,
+        ):
+            return value
+
+        self.assertEqual(invoke(outer, ["-v", "3"])[0], 3)
+        self.assertEqual(invoke(inner, ["-v", "4"])[0], 4)
+
+    def test_short_option_rejects_whitespace_but_supports_unicode(self):
+        with self.assertRaisesRegex(ValueError, "look like"):
+            Option(short="- ")
+
+        app = App("tool")
+
+        @app.main
+        def value(number: Annotated[int, Option(short="-数")] = 1):
+            return number
+
+        self.assertEqual(invoke(app, ["-数", "7"])[0], 7)
+
     def test_option_metadata_can_supply_default(self):
         app = App("tool")
 
@@ -628,6 +771,40 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(invoke(self.app_for(Custom()), [])[1], "custom\n")
         nested = json.loads(invoke(self.app_for({"value": Custom()}), [])[1])
         self.assertEqual(nested, {"value": "custom"})
+
+    def test_nested_mapping_keys_are_normalized(self):
+        class Custom:
+            def __str__(self):
+                return "custom-key"
+
+        value = {Path("file.txt"): {Custom(): Path("nested.txt")}}
+        output = invoke(self.app_for(value), [])[1]
+        self.assertEqual(
+            json.loads(output), {"file.txt": {"custom-key": "nested.txt"}}
+        )
+
+    def test_mapping_key_collisions_after_json_coercion_are_rejected(self):
+        for native, text_key in (
+            (1, "1"),
+            (1.5, "1.5"),
+            (True, "true"),
+            (None, "null"),
+        ):
+            with self.subTest(native=native), self.assertRaisesRegex(
+                ValueError, "JSON key collision"
+            ):
+                invoke(self.app_for({native: "native", text_key: "text"}), [])
+
+    def test_non_finite_numbers_are_rejected_in_json_output(self):
+        with self.assertRaisesRegex(ValueError, "JSON compliant"):
+            invoke(self.app_for({"value": float("nan")}), [])
+
+    def test_enum_collection_value_uses_json_rendering(self):
+        class Payload(enum.Enum):
+            result = ("ready", 2)
+
+        output = invoke(self.app_for(Payload.result), [])[1]
+        self.assertEqual(json.loads(output), ["ready", 2])
 
     def test_callback_exceptions_propagate(self):
         app = App("tool")

@@ -67,7 +67,7 @@ Function names are converted from `snake_case` to `kebab-case`; an explicit deco
 
 ## Nested subcommands
 
-Groups are namespaces. Their declaration functions supply documentation but are never executed during parser construction or command dispatch.
+Groups are namespaces. Their zero-parameter declaration functions supply documentation but are never executed during parser construction or command dispatch. Put executable group behavior and parameters in an explicit `@group.default` callback.
 
 ```python
 from pathlib import Path
@@ -102,7 +102,7 @@ python files.py repo git --help
 python files.py repo git status --short
 ```
 
-An ordinary group invoked without a child prints its help and returns successfully. Unknown children use `argparse`'s conventional error output and exit status 2. Nesting is recursive and has no fixed depth.
+Any group without a default invoked without a child prints its help and returns successfully, including an empty group. Unknown children use `argparse`'s conventional error output and exit status 2. A child must be written directly after its parent: placing `--` before a child is rejected rather than silently bypassing dispatch. Nesting is data-driven and has no fixed depth.
 
 The explicit form `repo = app.group("repo")` is also supported. With decorator syntax, `@app.group()` derives the group name from the declaration function.
 
@@ -133,14 +133,16 @@ def find(pattern: str = "*.py") -> list[str]:
 | `dry_run: bool = False` | `--dry-run` |
 | `cache: bool = True` | `--no-cache` |
 | `token: str` after `*` | required `--token TEXT` |
-| `tags: list[str] | None = None` | `--tags VALUE [VALUE ...]` |
+| `tags: list[str] | None = None` | `--tags TEXT [TEXT ...]` |
 | `mode: Mode = Mode.safe` | enum-valued `--mode {safe,...}` |
 
 Supported scalar annotations are `str`, `int`, `float`, `bool`, `pathlib.Path`, and `enum.Enum` subclasses. `T | None`, `Optional[T]`, and unannotated string parameters are supported. Lists may contain `str`, `int`, `float`, or `Path`.
 
 Required parameters are positional unless keyword-only or marked with `Option`. Parameters with defaults become options unless marked with `Argument`. Long option names use kebab-case, and both `--count 3` and `--count=3` work.
 
-Boolean options never consume a value. A `False` default creates `--flag`; a `True` default creates `--no-flag`. Omitting the option preserves the Python default exactly.
+Long option names must be spelled exactly; prefix abbreviations such as `--max-l` for `--max-lines` are rejected. Generated long names, short names, built-in help flags, and the configured root `--version` flag are checked for collisions at registration time. Short options consist of `-` plus one non-whitespace Unicode character; `-h` is reserved for help.
+
+Boolean options never consume a value. A `False` default creates `--flag`; a `True` default creates `--no-flag`. Omitting the option preserves the Python default exactly. A boolean parameter must have a default because a required flag cannot represent both boolean values; required booleans are rejected during registration.
 
 Lists use one syntax: consecutive values after one option, such as `--tags docs urgent`, or consecutive positional values. An optional list occurrence requires at least one value. Place list options after required positionals when their boundary would otherwise be ambiguous.
 
@@ -168,7 +170,8 @@ def upload(
 - `str`, `int`, `float`, `bool`, `Path`, enum values, and unknown objects print one line.
 - `dict`, `list`, and `tuple` print readable JSON with Unicode preserved.
 - Dataclass instances are converted with `dataclasses.asdict()` and printed as JSON.
-- Nested paths and enums serialize to strings and enum values respectively.
+- Nested paths, enums, unknown values, and mapping keys are normalized recursively.
+- Structured output is strict JSON; non-finite floats such as NaN and Infinity raise `ValueError` rather than emitting non-standard tokens.
 
 Callback exceptions propagate unchanged. Parsing and conversion errors are produced by `argparse` on stderr with exit status 2.
 
@@ -185,4 +188,4 @@ GitHub Actions runs the complete suite and example-command smoke tests on Python
 
 ## Limitations and non-goals
 
-Version 1 deliberately rejects `*args`, `**kwargs`, positional-only parameters, complex unions, mappings as input annotations, and list element types outside the documented set. It has no async dispatch, shell completion, environment/config loading, dependency injection, colors, interactive mode, arbitrary Python literal parsing, or implicit aliases. It does not dynamically traverse objects and does not claim Fire, Typer, or Click compatibility.
+Version 1 deliberately rejects `*args`, `**kwargs`, positional-only parameters, complex unions, mappings as input annotations, and list element types outside the documented set. Command and group decorators require parentheses, including the empty forms `@app.command()` and `@app.group()`. It has no async dispatch, shell completion, environment/config loading, dependency injection, colors, interactive mode, arbitrary Python literal parsing, or implicit aliases. It does not dynamically traverse objects and does not claim Fire, Typer, or Click compatibility.

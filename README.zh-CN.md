@@ -67,7 +67,7 @@ def check(text: str) -> bool:
 
 ## 嵌套子命令
 
-Group 是命令命名空间。Group 声明函数可以提供文档，但在构建解析器和命令分发期间绝不会被执行。
+Group 是命令命名空间。零参数的 Group 声明函数可以提供文档，但在构建解析器和命令分发期间绝不会被执行。可执行的 Group 行为及其参数必须放在显式的 `@group.default` 回调中。
 
 ```python
 from pathlib import Path
@@ -102,7 +102,7 @@ python files.py repo git --help
 python files.py repo git status --short
 ```
 
-普通 Group 在没有指定子命令时会输出自身帮助并成功返回。未知子命令使用 `argparse` 的常规错误格式，并以状态码 2 退出。嵌套通过递归实现，没有固定深度限制。
+任何没有默认回调的 Group 在未指定子命令时都会输出自身帮助并成功返回，空 Group 也一样。未知子命令使用 `argparse` 的常规错误格式，并以状态码 2 退出。子节点必须直接写在父节点之后；在子节点前放置 `--` 会被拒绝，不会再静默绕过分发。嵌套路由由数据驱动，没有固定深度限制。
 
 也可以使用显式写法 `repo = app.group("repo")`。使用装饰器时，`@app.group()` 会根据声明函数名推导 Group 名称。
 
@@ -133,14 +133,16 @@ def find(pattern: str = "*.py") -> list[str]:
 | `dry_run: bool = False` | `--dry-run` |
 | `cache: bool = True` | `--no-cache` |
 | `*` 后的 `token: str` | 必填选项 `--token TEXT` |
-| `tags: list[str] | None = None` | `--tags VALUE [VALUE ...]` |
+| `tags: list[str] | None = None` | `--tags TEXT [TEXT ...]` |
 | `mode: Mode = Mode.safe` | Enum 选项 `--mode {safe,...}` |
 
 支持的标量注解包括 `str`、`int`、`float`、`bool`、`pathlib.Path` 和 `enum.Enum` 子类，同时支持 `T | None`、`Optional[T]` 以及无注解字符串参数。列表元素可以是 `str`、`int`、`float` 或 `Path`。
 
 必填参数默认映射为位置参数；关键字专用参数或使用 `Option` 标记的参数映射为选项。带默认值的参数默认映射为选项，除非使用 `Argument` 标记。长选项名采用 kebab-case，`--count 3` 和 `--count=3` 均可使用。
 
-布尔选项不会消耗后续参数。默认值为 `False` 时生成 `--flag`，默认值为 `True` 时生成 `--no-flag`。省略选项时会精确保留 Python 默认值。
+长选项必须完整拼写；不接受用 `--max-l` 代替 `--max-lines` 之类的前缀缩写。生成的长选项、短选项、内置帮助 flag 和已配置的根 `--version` 会在注册时检查冲突。短选项由 `-` 加一个非空白 Unicode 字符组成，其中 `-h` 保留给帮助功能。
+
+布尔选项不会消耗后续参数。默认值为 `False` 时生成 `--flag`，默认值为 `True` 时生成 `--no-flag`。省略选项时会精确保留 Python 默认值。布尔参数必须带默认值，因为必填 flag 无法同时表达两个布尔值；必填布尔参数会在注册时被拒绝。
 
 列表只使用一种语法：一个选项后跟连续的多个值，例如 `--tags docs urgent`；位置列表同样接收连续值。可选列表一旦出现就至少需要一个值。当列表选项与必填位置参数可能产生边界歧义时，应将列表选项放在位置参数之后。
 
@@ -168,7 +170,8 @@ def upload(
 - `str`、`int`、`float`、`bool`、`Path`、Enum 值和未知对象输出为一行文本。
 - `dict`、`list` 和 `tuple` 输出为可读 JSON，并保留 Unicode 字符。
 - Dataclass 实例先通过 `dataclasses.asdict()` 转换，再输出为 JSON。
-- 嵌套的 Path 和 Enum 分别序列化为字符串和 Enum 值。
+- 嵌套的 Path、Enum、未知值和映射键会被递归规范化。
+- 结构化输出是严格 JSON；NaN 和 Infinity 等非有限浮点数会抛出 `ValueError`，不会输出非标准 token。
 
 用户回调抛出的异常会原样向上传播。解析和类型转换错误由 `argparse` 输出到 stderr，并以状态码 2 退出。
 
@@ -184,4 +187,4 @@ GitHub Actions 会在 Python 3.10、3.11、3.12、3.13 和 3.14 上运行完整�
 
 ## 限制与非目标
 
-版本 1 会明确拒绝 `*args`、`**kwargs`、仅位置参数、复杂 Union、作为输入注解的映射，以及文档范围外的列表元素类型。它不提供异步分发、Shell 补全、环境变量或配置文件加载、依赖注入、彩色输出、交互模式、任意 Python 字面量解析和隐式别名；不会动态遍历对象，也不宣称兼容 Fire、Typer 或 Click。
+版本 1 会明确拒绝 `*args`、`**kwargs`、仅位置参数、复杂 Union、作为输入注解的映射，以及文档范围外的列表元素类型。命令和 Group 装饰器必须带括号，包括空形式 `@app.command()` 和 `@app.group()`。它不提供异步分发、Shell 补全、环境变量或配置文件加载、依赖注入、彩色输出、交互模式、任意 Python 字面量解析和隐式别名；不会动态遍历对象，也不宣称兼容 Fire、Typer 或 Click。
