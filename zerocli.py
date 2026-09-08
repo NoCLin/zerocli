@@ -2,6 +2,23 @@
 
 Only callables registered with :class:`App` or a returned :class:`Group` are
 exposed. Function signatures define their command-line parameters.
+
+The root-callback API is directly testable without changing ``sys.argv``:
+
+>>> import contextlib
+>>> import io
+>>> app = App("hello")
+>>> @app.main
+... def greet(name: str, excited: bool = False) -> str:
+...     suffix = "!" if excited else "."
+...     return f"Hello, {name}{suffix}"
+>>> output = io.StringIO()
+>>> with contextlib.redirect_stdout(output):
+...     result = app.run(["Ada", "--excited"])
+>>> result
+'Hello, Ada!'
+>>> output.getvalue()
+'Hello, Ada!\\n'
 """
 
 from __future__ import annotations

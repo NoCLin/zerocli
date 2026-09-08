@@ -174,7 +174,8 @@ Callback exceptions propagate unchanged. Parsing and conversion errors are produ
 
 ## Testing
 
-The suite uses only `unittest` and calls `app.run(argv)` directly:
+The suite uses only `unittest`, calls `app.run(argv)` directly, and includes a
+doctest for the public root-callback example:
 
 ```bash
 python -m unittest discover -v

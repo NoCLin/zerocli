@@ -174,7 +174,7 @@ def upload(
 
 ## 测试与 CI
 
-测试套件只使用 `unittest`，并直接调用 `app.run(argv)`：
+测试套件只使用 `unittest`，直接调用 `app.run(argv)`，并为公开的根回调示例加入了 doctest：
 
 ```bash
 python -m unittest discover -v
