@@ -1,5 +1,7 @@
 # zerocli
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 `zerocli` is a single-file, standard-library-only, type-hint-driven CLI helper for small Python scripts and AI-agent skills.
 
 The complete runtime is [`zerocli.py`](zerocli.py). It supports Python 3.10+ and has no runtime or test dependencies outside the standard library. Vendor it by copying that one file next to a skill script:
@@ -178,7 +180,8 @@ The suite uses only `unittest` and calls `app.run(argv)` directly:
 python -m unittest discover -v
 ```
 
+GitHub Actions runs the complete suite and example-command smoke tests on Python 3.10, 3.11, 3.12, 3.13, and 3.14.
+
 ## Limitations and non-goals
 
 Version 1 deliberately rejects `*args`, `**kwargs`, positional-only parameters, complex unions, mappings as input annotations, and list element types outside the documented set. It has no async dispatch, shell completion, environment/config loading, dependency injection, colors, interactive mode, arbitrary Python literal parsing, or implicit aliases. It does not dynamically traverse objects and does not claim Fire, Typer, or Click compatibility.
-
