@@ -128,7 +128,7 @@ def find(pattern: str = "*.py") -> list[str]:
 
 | Python signature | CLI form |
 |---|---|
-| `path: Path` | required positional `PATH` |
+| `path: Path` | required positional `path` |
 | `count: int = 3` | `--count INT`, default `3` |
 | `dry_run: bool = False` | `--dry-run` |
 | `cache: bool = True` | `--no-cache` |

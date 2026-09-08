@@ -128,7 +128,7 @@ def find(pattern: str = "*.py") -> list[str]:
 
 | Python 签名 | CLI 形式 |
 |---|---|
-| `path: Path` | 必填位置参数 `PATH` |
+| `path: Path` | 必填位置参数 `path` |
 | `count: int = 3` | `--count INT`，默认值为 `3` |
 | `dry_run: bool = False` | `--dry-run` |
 | `cache: bool = True` | `--no-cache` |

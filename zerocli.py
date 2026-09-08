@@ -31,9 +31,10 @@ import json
 import sys
 import types
 import typing
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 
 class _Missing:
@@ -272,7 +273,6 @@ def _default_metavar(annotation: Any) -> str:
 def _add_parameter(parser: argparse.ArgumentParser, parameter: _Parameter) -> None:
     value_type = parameter.item_annotation if parameter.is_list else parameter.annotation
     assert value_type is not None
-    metavar = parameter.metavar or _default_metavar(value_type)
     common: dict[str, Any] = {}
     if parameter.help is not None:
         common["help"] = parameter.help
@@ -291,14 +291,14 @@ def _add_parameter(parser: argparse.ArgumentParser, parameter: _Parameter) -> No
             common["action"] = "store_false" if parameter.default is True else "store_true"
         else:
             common["type"] = _converter(value_type)
-            common["metavar"] = metavar
+            common["metavar"] = parameter.metavar or _default_metavar(value_type)
             if parameter.is_list:
                 common["nargs"] = "+"
         parser.add_argument(*names, **common)
         return
 
     common["type"] = _converter(value_type)
-    common["metavar"] = metavar
+    common["metavar"] = parameter.metavar or parameter.name
     if parameter.is_list:
         common["nargs"] = "+" if parameter.required else "*"
     elif not parameter.required:

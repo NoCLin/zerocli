@@ -224,9 +224,21 @@ class RootCommandTests(unittest.TestCase):
 
         code, output, _ = invoke_exit(app, ["--help"])
         self.assertEqual(code, 0)
+        self.assertEqual(output.splitlines()[0], "usage: wc [-h] [--limit INT] path")
         self.assertIn("Count lines in PATH.", output)
         self.assertIn("--limit", output)
-        self.assertIn("PATH", output)
+
+    def test_positional_metavars_preserve_distinct_parameter_names(self):
+        app = App("files")
+
+        @app.main
+        def move(source: Path, destination: Path):
+            pass
+
+        _, output, _ = invoke_exit(app, ["--help"])
+        self.assertEqual(output.splitlines()[0], "usage: files [-h] source destination")
+        self.assertIn("  source", output)
+        self.assertIn("  destination", output)
 
     def test_unnamed_app_uses_process_name_in_nested_help(self):
         app = App()
@@ -299,7 +311,7 @@ class CommandRoutingTests(unittest.TestCase):
 
         _, output, _ = invoke_exit(app, ["copy-file", "--help"])
         self.assertIn("tool copy-file", output)
-        self.assertIn("path", output.lower())
+        self.assertIn("source", output.lower())
         self.assertIn("--overwrite", output)
 
     def test_nested_routes_at_arbitrary_depth(self):
