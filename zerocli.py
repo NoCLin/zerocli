@@ -35,10 +35,14 @@ import typing
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 
 _MISSING = object()
+_ANNOTATED = getattr(typing, "Annotated", None)
+_UNION_ORIGINS = (typing.Union,)
+if hasattr(types, "UnionType"):
+    _UNION_ORIGINS += (types.UnionType,)
 
 
 @dataclass(frozen=True)
@@ -126,7 +130,7 @@ def _unwrap_annotation(annotation: Any) -> tuple[Any, _ParameterMetadata | None]
     metadata: _ParameterMetadata | None = None
     while True:
         origin = typing.get_origin(annotation)
-        if origin is typing.Annotated:
+        if _ANNOTATED is not None and origin is _ANNOTATED:
             annotated_type, *extras = typing.get_args(annotation)
             relevant = [item for item in extras if isinstance(item, _ParameterMetadata)]
             if len(relevant) + (metadata is not None) > 1:
@@ -137,7 +141,7 @@ def _unwrap_annotation(annotation: Any) -> tuple[Any, _ParameterMetadata | None]
             if relevant:
                 metadata = relevant[0]
             continue
-        if origin in (typing.Union, types.UnionType):
+        if origin in _UNION_ORIGINS:
             members = typing.get_args(annotation)
             non_none = [member for member in members if member is not type(None)]
             if len(non_none) == 1 and len(non_none) != len(members):
@@ -165,7 +169,10 @@ def _parameters_for(
     skip_first: bool = False,
 ) -> list[_Parameter]:
     try:
-        hints = typing.get_type_hints(func, include_extras=True)
+        if _ANNOTATED is None:
+            hints = typing.get_type_hints(func)
+        else:
+            hints = typing.get_type_hints(func, include_extras=True)
     except Exception as error:
         raise TypeError(f"cannot resolve annotations for {path or '<root>'}: {error}") from error
 
@@ -296,7 +303,7 @@ def _enum_converter(enum_type: type[enum.Enum]) -> Callable[[str], enum.Enum]:
 def _converter(annotation: Any) -> Callable[[str], Any]:
     if _is_enum_type(annotation):
         return _enum_converter(annotation)
-    return cast(Callable[[str], Any], annotation)
+    return annotation
 
 
 def _default_metavar(annotation: Any) -> str:

@@ -4,7 +4,7 @@
 
 `zerocli` 是一个面向小型 Python 脚本和 AI Agent Skill 的单文件、纯标准库、类型提示驱动的 CLI 辅助框架。
 
-完整运行时只有 [`zerocli.py`](zerocli.py) 一个文件，支持 Python 3.10+，运行和测试均不依赖任何第三方包。只需将它复制到 Skill 脚本旁边即可完成集成：
+完整运行时只有 [`zerocli.py`](zerocli.py) 一个文件，支持 Python 3.8+，运行和测试均不依赖任何第三方包。只需将它复制到 Skill 脚本旁边即可完成集成：
 
 ```bash
 cp zerocli.py path/to/skill/scripts/zerocli.py
@@ -18,12 +18,13 @@ cp zerocli.py path/to/skill/scripts/zerocli.py
 
 ```python
 from pathlib import Path
+from typing import Optional
 from zerocli import App
 
 app = App("wc", help="统计文件行数", version="wc 1.0")
 
 @app.main
-def count_lines(path: Path, limit: int | None = None) -> dict:
+def count_lines(path: Path, limit: Optional[int] = None) -> dict:
     """统计 PATH 的行数。"""
     lines = path.read_text(encoding="utf-8").splitlines()
     if limit is not None:
@@ -113,6 +114,7 @@ Group 是通过 `app.group(name)` 或 `group.group(name)` 显式创建的命令�
 
 ```python
 from pathlib import Path
+from typing import List
 from zerocli import App
 
 app = App("files", help="Files Skill 使用的工具")
@@ -120,7 +122,7 @@ app = App("files", help="Files Skill 使用的工具")
 repo = app.group("repo", help="仓库操作")
 
 @repo.command("find")
-def find_files(root: Path, pattern: str = "*.py") -> list[str]:
+def find_files(root: Path, pattern: str = "*.py") -> List[str]:
     """在 ROOT 下查找匹配文件。"""
     return [str(path) for path in root.rglob(pattern)]
 
@@ -156,7 +158,7 @@ def repo_summary(verbose: bool = False) -> dict:
     return {"summary": True, "verbose": verbose}
 
 @repo.command("find")
-def find(pattern: str = "*.py") -> list[str]:
+def find(pattern: str = "*.py") -> List[str]:
     return [pattern]
 ```
 
@@ -171,10 +173,10 @@ def find(pattern: str = "*.py") -> list[str]:
 | `dry_run: bool = False` | `--dry-run` |
 | `cache: bool = True` | `--no-cache` |
 | `*` 后的 `token: str` | 必填选项 `--token TEXT` |
-| `tags: list[str] | None = None` | `--tags TEXT [TEXT ...]` |
+| `tags: Optional[List[str]] = None` | `--tags TEXT [TEXT ...]` |
 | `mode: Mode = Mode.safe` | Enum 选项 `--mode {safe,...}` |
 
-支持的标量注解包括 `str`、`int`、`float`、`bool`、`pathlib.Path` 和 `enum.Enum` 子类，同时支持 `T | None`、`Optional[T]` 以及无注解字符串参数。列表元素可以是 `str`、`int`、`float` 或 `Path`。
+支持的标量注解包括 `str`、`int`、`float`、`bool`、`pathlib.Path` 和 `enum.Enum` 子类。所有支持的 Python 版本均可使用 `Optional[T]` 和无注解字符串参数；Python 3.9+ 可使用 `list[T]`，Python 3.10+ 可使用 `T | None`。在旧版本上请使用 `typing.List[T]` 和 `Optional[T]`。列表元素可以是 `str`、`int`、`float` 或 `Path`。
 
 必填参数默认映射为位置参数；关键字专用参数或使用 `Option` 标记的参数映射为选项。带默认值的参数默认映射为选项，除非使用 `Argument` 标记。长选项名采用 kebab-case，`--count 3` 和 `--count=3` 均可使用。
 
@@ -186,7 +188,7 @@ def find(pattern: str = "*.py") -> list[str]:
 
 ### 参数文档
 
-`typing.Annotated` 元数据是可选功能：
+`typing.Annotated` 元数据是 Python 3.9+ 提供的可选功能：
 
 ```python
 from typing import Annotated
@@ -222,7 +224,7 @@ def upload(
 python -m unittest discover -v
 ```
 
-GitHub Actions 会在 Python 3.10、3.11、3.12、3.13 和 3.14 上运行完整测试及示例命令冒烟测试。
+GitHub Actions 会在 Python 3.8 至 3.14 上运行完整测试及示例命令冒烟测试。仅在语言或标准库不具备相应功能时跳过版本专属语法测试：Python 3.8 尚无 `Annotated`、PEP 585 内置泛型和 PEP 604 联合类型，Python 3.9 仅无 PEP 604 联合类型。
 
 ## 限制与非目标
 

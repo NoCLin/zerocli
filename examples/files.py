@@ -4,6 +4,7 @@ Run from the repository root with ``python -m examples.files``.
 """
 
 from pathlib import Path
+from typing import List
 
 from zerocli import App
 
@@ -32,7 +33,7 @@ def repo_summary(verbose: bool = False) -> dict:
 
 
 @repo.command("find")
-def find_files(root: Path, pattern: str = "*.py") -> list[str]:
+def find_files(root: Path, pattern: str = "*.py") -> List[str]:
     """Find matching files below ROOT."""
     return [str(path) for path in root.rglob(pattern)]
 

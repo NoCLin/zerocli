@@ -4,7 +4,7 @@
 
 `zerocli` is a single-file, standard-library-only, type-hint-driven CLI helper for small Python scripts and AI-agent skills.
 
-The complete runtime is [`zerocli.py`](zerocli.py). It supports Python 3.10+ and has no runtime or test dependencies outside the standard library. Vendor it by copying that one file next to a skill script:
+The complete runtime is [`zerocli.py`](zerocli.py). It supports Python 3.8+ and has no runtime or test dependencies outside the standard library. Vendor it by copying that one file next to a skill script:
 
 ```bash
 cp zerocli.py path/to/skill/scripts/zerocli.py
@@ -18,12 +18,13 @@ Only explicitly registered functions become CLI entry points, except for the con
 
 ```python
 from pathlib import Path
+from typing import Optional
 from zerocli import App
 
 app = App("wc", help="Count lines in a file", version="wc 1.0")
 
 @app.main
-def count_lines(path: Path, limit: int | None = None) -> dict:
+def count_lines(path: Path, limit: Optional[int] = None) -> dict:
     """Count lines in PATH."""
     lines = path.read_text(encoding="utf-8").splitlines()
     if limit is not None:
@@ -113,6 +114,7 @@ Groups are explicit namespaces created with `app.group(name)` or `group.group(na
 
 ```python
 from pathlib import Path
+from typing import List
 from zerocli import App
 
 app = App("files", help="Utilities used by a Files skill")
@@ -120,7 +122,7 @@ app = App("files", help="Utilities used by a Files skill")
 repo = app.group("repo", help="Repository operations")
 
 @repo.command("find")
-def find_files(root: Path, pattern: str = "*.py") -> list[str]:
+def find_files(root: Path, pattern: str = "*.py") -> List[str]:
     """Find matching files below ROOT."""
     return [str(path) for path in root.rglob(pattern)]
 
@@ -156,7 +158,7 @@ def repo_summary(verbose: bool = False) -> dict:
     return {"summary": True, "verbose": verbose}
 
 @repo.command("find")
-def find(pattern: str = "*.py") -> list[str]:
+def find(pattern: str = "*.py") -> List[str]:
     return [pattern]
 ```
 
@@ -171,10 +173,10 @@ def find(pattern: str = "*.py") -> list[str]:
 | `dry_run: bool = False` | `--dry-run` |
 | `cache: bool = True` | `--no-cache` |
 | `token: str` after `*` | required `--token TEXT` |
-| `tags: list[str] | None = None` | `--tags TEXT [TEXT ...]` |
+| `tags: Optional[List[str]] = None` | `--tags TEXT [TEXT ...]` |
 | `mode: Mode = Mode.safe` | enum-valued `--mode {safe,...}` |
 
-Supported scalar annotations are `str`, `int`, `float`, `bool`, `pathlib.Path`, and `enum.Enum` subclasses. `T | None`, `Optional[T]`, and unannotated string parameters are supported. Lists may contain `str`, `int`, `float`, or `Path`.
+Supported scalar annotations are `str`, `int`, `float`, `bool`, `pathlib.Path`, and `enum.Enum` subclasses. `Optional[T]` and unannotated string parameters work on every supported Python version. `list[T]` is available on Python 3.9+, and `T | None` on Python 3.10+; use `typing.List[T]` and `Optional[T]` on older versions. Lists may contain `str`, `int`, `float`, or `Path`.
 
 Required parameters are positional unless keyword-only or marked with `Option`. Parameters with defaults become options unless marked with `Argument`. Long option names use kebab-case, and both `--count 3` and `--count=3` work.
 
@@ -186,7 +188,7 @@ Lists use one syntax: consecutive values after one option, such as `--tags docs 
 
 ### Parameter documentation
 
-`typing.Annotated` metadata is optional:
+`typing.Annotated` metadata is optional and available on Python 3.9+:
 
 ```python
 from typing import Annotated
@@ -223,7 +225,7 @@ doctest for the public root-callback example:
 python -m unittest discover -v
 ```
 
-GitHub Actions runs the complete suite and example-command smoke tests on Python 3.10, 3.11, 3.12, 3.13, and 3.14.
+GitHub Actions runs the complete suite and example-command smoke tests on Python 3.8 through 3.14. Version-specific syntax tests are skipped only where their language or standard-library feature is unavailable: Python 3.8 lacks `Annotated`, PEP 585 built-in generics, and PEP 604 unions; Python 3.9 lacks only PEP 604 unions.
 
 ## Limitations and non-goals
 

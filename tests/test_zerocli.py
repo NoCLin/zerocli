@@ -6,10 +6,20 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Dict, List, Optional, Union
 from unittest import mock
 
 from zerocli import App, Argument, Option
+
+try:
+    from typing import Annotated
+except ImportError:
+    Annotated = None
+
+
+requires_annotated = unittest.skipIf(
+    Annotated is None, "typing.Annotated requires Python 3.9+"
+)
 
 
 class ForwardMode(enum.Enum):
@@ -138,6 +148,7 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.command("-bad")
 
+    @requires_annotated
     def test_invalid_parameter_metadata_is_rejected(self):
         with self.assertRaises(ValueError):
             Option(short="verbose")
@@ -148,6 +159,7 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "only one"):
             App("tool").main(duplicate)
 
+    @requires_annotated
     def test_keyword_only_argument_and_positional_bool_are_rejected(self):
         def keyword_argument(*, value: Annotated[str, Argument()]):
             pass
@@ -190,6 +202,7 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, r"@group\.command\(\)"):
             repo.command(callback)
 
+    @requires_annotated
     def test_option_flag_conflicts_fail_during_registration(self):
         with self.assertRaisesRegex(ValueError, "reserved.*-h"):
             Option(short="-h")
@@ -221,7 +234,7 @@ class RegistrationTests(unittest.TestCase):
     def test_failed_command_registration_is_atomic(self):
         app = App("tool")
 
-        def unsupported(value: dict[str, str]):
+        def unsupported(value: Dict[str, str]):
             return value
 
         with self.assertRaisesRegex(TypeError, "unsupported"):
@@ -561,6 +574,7 @@ class CommandRoutingTests(unittest.TestCase):
         self.assertEqual(invoke(app, [])[0], "root")
         self.assertEqual(invoke(app, ["status"])[0], "status")
 
+    @requires_annotated
     def test_child_name_wins_over_default_positional(self):
         app = App("tool")
         repo = app.group("repo")
@@ -903,24 +917,45 @@ class ParameterTests(unittest.TestCase):
         positional = App("items")
 
         @positional.main
-        def collect(values: list[int]):
+        def collect(values: List[int]):
             return values
 
         optional = App("tags")
 
         @optional.main
-        def tags(values: list[str] | None = None):
+        def tags(values: Optional[List[str]] = None):
             return values
 
         self.assertEqual(invoke(positional, ["1", "2", "3"])[0], [1, 2, 3])
         self.assertIsNone(invoke(optional, [])[0])
         self.assertEqual(invoke(optional, ["--values", "a", "b"])[0], ["a", "b"])
 
+    @unittest.skipUnless(sys.version_info >= (3, 9), "PEP 585 requires Python 3.9+")
+    def test_pep_585_list_annotation(self):
+        app = App("items")
+
+        @app.main
+        def collect(values: list[int]):
+            return values
+
+        self.assertEqual(invoke(app, ["1", "2"])[0], [1, 2])
+
+    @unittest.skipUnless(sys.version_info >= (3, 10), "PEP 604 requires Python 3.10+")
+    def test_pep_604_optional_annotation(self):
+        app = App("value")
+
+        @app.main
+        def optional(value: int | None = None):
+            return value
+
+        self.assertIsNone(invoke(app, [])[0])
+        self.assertEqual(invoke(app, ["--value", "3"])[0], 3)
+
     def test_list_option_single_value_equals_syntax_and_empty_occurrence(self):
         app = App("items")
 
         @app.main
-        def collect(values: list[int] | None = None):
+        def collect(values: Optional[List[int]] = None):
             return values
 
         self.assertEqual(invoke(app, ["--values=1"])[0], [1])
@@ -929,6 +964,7 @@ class ParameterTests(unittest.TestCase):
         self.assertEqual(output, "")
         self.assertIn("--values", error)
 
+    @requires_annotated
     def test_forced_optional_positional_uses_python_default(self):
         app = App("show")
 
@@ -939,6 +975,7 @@ class ParameterTests(unittest.TestCase):
         self.assertEqual(invoke(app, [])[0], "summary")
         self.assertEqual(invoke(app, ["details"])[0], "details")
 
+    @requires_annotated
     def test_unrelated_annotated_metadata_is_ignored(self):
         marker = object()
         app = App("tool")
@@ -967,16 +1004,16 @@ class ParameterTests(unittest.TestCase):
             with self.subTest(func=func), self.assertRaisesRegex(TypeError, "list\\[T\\]"):
                 app.main(func)
 
-        def mapping(value: dict[str, int]):
+        def mapping(value: Dict[str, int]):
             pass
 
         with self.assertRaisesRegex(TypeError, "unsupported"):
             App("tool").main(mapping)
 
-        def union(value: int | str):
+        def union(value: Union[int, str]):
             pass
 
-        def unsupported_list(value: list[bool]):
+        def unsupported_list(value: List[bool]):
             pass
 
         with self.assertRaisesRegex(TypeError, "union"):
@@ -984,6 +1021,7 @@ class ParameterTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "list annotation"):
             App("tool").main(unsupported_list)
 
+    @requires_annotated
     def test_annotated_argument_option_help_short_and_metavar(self):
         app = App("tool")
 
@@ -1001,6 +1039,7 @@ class ParameterTests(unittest.TestCase):
         self.assertIn("-r", output)
         self.assertIn("Retry count", output)
 
+    @requires_annotated
     def test_optional_and_annotated_wrappers_compose_in_either_order(self):
         outer = App("outer")
 
@@ -1021,6 +1060,7 @@ class ParameterTests(unittest.TestCase):
         self.assertEqual(invoke(outer, ["-v", "3"])[0], 3)
         self.assertEqual(invoke(inner, ["-v", "4"])[0], 4)
 
+    @requires_annotated
     def test_short_option_rejects_whitespace_but_supports_unicode(self):
         with self.assertRaisesRegex(ValueError, "look like"):
             Option(short="- ")
@@ -1033,6 +1073,7 @@ class ParameterTests(unittest.TestCase):
 
         self.assertEqual(invoke(app, ["-数", "7"])[0], 7)
 
+    @requires_annotated
     def test_repeated_annotated_option_invocations_are_independent(self):
         app = App("tool")
 

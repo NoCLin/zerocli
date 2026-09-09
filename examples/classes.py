@@ -4,6 +4,7 @@ Run from the repository root with ``python -m examples.classes``.
 """
 
 from pathlib import Path
+from typing import List
 
 from zerocli import App
 
@@ -22,7 +23,7 @@ class RepositoryCommands:
         """Describe the configured repository."""
         return {"root": str(self.root), "verbose": verbose}
 
-    def find(self, pattern: str = "*.py", limit: int = 20) -> list[str]:
+    def find(self, pattern: str = "*.py", limit: int = 20) -> List[str]:
         """Find matching files below the configured repository."""
         matches = sorted(str(path) for path in self.root.rglob(pattern))
         return matches[:limit]

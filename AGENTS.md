@@ -22,6 +22,7 @@ A consuming skill should be able to copy one file, `zerocli.py`, into its reposi
 
 ```python
 from pathlib import Path
+from typing import List
 from zerocli import App
 
 app = App("files", help="Utilities used by the Files skill")
@@ -48,7 +49,7 @@ repo = app.group("repo", help="Repository operations")
 
 
 @repo.command("find")
-def find_files(root: Path, pattern: str = "*.py") -> list[str]:
+def find_files(root: Path, pattern: str = "*.py") -> List[str]:
     """Find matching files below ROOT."""
     return [str(path) for path in root.rglob(pattern)]
 
@@ -81,13 +82,14 @@ The framework must also support a script with **no subcommands**, where the app 
 
 ```python
 from pathlib import Path
+from typing import Optional
 from zerocli import App
 
 app = App("wc", help="Count lines in a file")
 
 
 @app.main
-def count_lines(path: Path, limit: int | None = None) -> dict:
+def count_lines(path: Path, limit: Optional[int] = None) -> dict:
     """Count lines in PATH."""
     lines = path.read_text(encoding="utf-8").splitlines()
     if limit is not None:
@@ -111,7 +113,7 @@ The exact spelling of the single-root callable API may be `@app.main`, `@app.def
 
 - Runtime dependency policy: **Python standard library only**.
 - Distribution policy: the runtime framework must be one Python file named `zerocli.py`.
-- Target Python: Python 3.10+ initially.
+- Target Python: Python 3.8+.
 - Do not use `click`, `typer`, `fire`, `rich`, `termcolor`, `pydantic`, `docstring_parser`, `typing_extensions`, or any external package.
 - Do not shell out to external tools for parsing or help rendering.
 - Do not dynamically expose modules, arbitrary objects, inherited members, or
@@ -334,7 +336,7 @@ A no-subcommand app has one root callback and no command tree:
 app = App("wc")
 
 @app.main
-def count(path: Path, limit: int | None = None):
+def count(path: Path, limit: Optional[int] = None):
     ...
 ```
 
@@ -510,7 +512,7 @@ For every callable node:
 | `count: int = 3` | optional `--count INT`, default `3` |
 | `dry_run: bool = False` | `--dry-run` |
 | `cache: bool = True` | `--no-cache` |
-| `tags: list[str] | None = None` | one documented list convention |
+| `tags: Optional[List[str]] = None` | one documented list convention |
 | `mode: Mode = Mode.safe` | enum option with allowed values |
 
 Rules:
@@ -534,9 +536,12 @@ Support robustly:
 - `bool` through flags
 - `pathlib.Path`
 - `enum.Enum` subclasses
-- `list[str]`, `list[int]`, `list[float]`, `list[Path]`
-- `T | None` and `Optional[T]`
-- `typing.Annotated[T, ...]` for optional metadata
+- `typing.List[str]`, `typing.List[int]`, `typing.List[float]`, and
+  `typing.List[Path]` on every supported version; the equivalent built-in
+  `list[T]` spelling on Python 3.9+
+- `Optional[T]` on every supported version; the equivalent `T | None`
+  spelling on Python 3.10+
+- `typing.Annotated[T, ...]` for optional metadata on Python 3.9+
 - unannotated values as `str`
 
 For unsupported annotations, either treat them as strings or raise a clear registration-time `TypeError`; choose one policy and document it. Prefer rejecting clearly complex unsupported types rather than silently producing surprising values.
@@ -714,10 +719,12 @@ reviewable contracts.
 - Add annotations to public APIs and internal helpers. Avoid unbounded `Any`
   where a useful concrete type can be stated without making the single-file
   implementation harder to understand.
-- On Python 3.10+, import runtime collection protocols such as `Callable` and
-  `Sequence` from `collections.abc`. Use `typing` for facilities such as `Any`,
-  `Annotated`, `get_args`, `get_origin`, and `get_type_hints`.
-- Keep all syntax and standard-library usage compatible with Python 3.10. A
+- On Python 3.8+, runtime collection protocols such as `Callable` and
+  `Sequence` may be imported from `collections.abc`, but do not subscript them
+  at runtime on 3.8. Use `typing` for facilities such as `Any`, `get_args`,
+  `get_origin`, and `get_type_hints`; feature-detect version-specific helpers
+  such as `Annotated`.
+- Keep all syntax and standard-library usage compatible with Python 3.8. A
   change that passes only on the developer's newest Python is not acceptable.
 - Keep the distinction between the framework's own annotations and supported
   user callback annotations explicit. Extending either surface requires tests.
@@ -764,12 +771,14 @@ reviewable contracts.
 
 Do not add a mandatory external type checker: the repository must retain its
 zero-third-party-dependency test policy. Type-focused behavior is enforced with
-`unittest`, Python 3.10-compatible syntax checks, and the CI version matrix.
+`unittest`, Python 3.8-compatible syntax checks, and the CI version matrix.
 
 ## Project maintenance foundations
 
 - Keep `.github/workflows/ci.yml` running the full standard-library test suite
-  on Python 3.10, 3.11, 3.12, 3.13, and 3.14 for pushes and pull requests.
+  on Python 3.8, 3.9, 3.10, 3.11, 3.12, 3.13, and 3.14 for pushes and pull
+  requests. Version-specific syntax tests may be skipped only where the
+  corresponding language or standard-library feature is unavailable.
 - CI must also smoke-test the documented example command paths. Updating an
   example requires updating its smoke test when the invocation changes; keep
   root commands, group defaults, nested commands, and representative help paths
@@ -783,7 +792,7 @@ zero-third-party-dependency test policy. Type-focused behavior is enforced with
 - Maintain `.gitignore` entries for Python bytecode and coverage artifacts, and
   confirm `git status --short` contains no generated files before committing.
 - Before reporting completion, run the complete unit/doctest suite, the example
-  smoke commands, a Python 3.10 syntax compatibility check, and
+  smoke commands, a Python 3.8 syntax compatibility check, and
   `git diff --check`.
 - When asked to commit in this repository, use repository-local identity
   `Anonymous <anonymous@localhost>`. Never change the user's global Git identity.
@@ -793,7 +802,7 @@ zero-third-party-dependency test policy. Type-focused behavior is enforced with
 The project is ready when:
 
 1. `zerocli.py` is the only runtime file required by a consuming skill.
-2. It imports in a clean Python 3.10+ environment with no third-party packages.
+2. It imports in a clean Python 3.8+ environment with no third-party packages.
 3. A no-subcommand script can be expressed with one decorated typed function and no direct `argparse` calls.
 4. A flat command app can register multiple commands with no direct parser setup.
 5. A nested command tree can reach at least `repo git status`.
@@ -812,7 +821,7 @@ The project is ready when:
 12. The implementation contains no external runtime or test dependency.
 13. English and Simplified Chinese READMEs are synchronized and mutually linked.
 14. The public doctest is non-empty and runs through unittest discovery.
-15. CI tests every supported Python minor version from 3.10 through 3.14 and
+15. CI tests every supported Python minor version from 3.8 through 3.14 and
     smoke-tests the examples.
 
 ## Recommended development order
@@ -856,5 +865,5 @@ At every step, add tests before broadening scope.
 - `tests/test_doctest.py`: doctest integration and non-empty-example guard.
 - `README.md` and `README.zh-CN.md`: synchronized usage and limitations.
 - `examples/files.py` or equivalent: realistic no-subcommand and/or nested-command skill example.
-- `.github/workflows/ci.yml`: Python 3.10-3.14 unit and smoke-test matrix.
+- `.github/workflows/ci.yml`: Python 3.8-3.14 unit and smoke-test matrix.
 - A short final implementation note with API decisions, nested command behavior, group-default behavior, list syntax, limitations, and test results.
