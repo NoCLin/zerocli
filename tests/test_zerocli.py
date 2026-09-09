@@ -12,6 +12,11 @@ from unittest import mock
 from zerocli import App, Argument, Option
 
 
+class ForwardMode(enum.Enum):
+    safe = "safe"
+    fast = "fast"
+
+
 def invoke(app, argv):
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -30,6 +35,18 @@ def invoke_exit(app, argv):
 
 
 class RegistrationTests(unittest.TestCase):
+    def test_command_decorator_returns_the_original_function(self):
+        app = App("tool")
+
+        def inspect_file() -> str:
+            """Keep my Python identity."""
+            return "ok"
+
+        registered = app.command()(inspect_file)
+        self.assertIs(registered, inspect_file)
+        self.assertEqual(registered.__name__, "inspect_file")
+        self.assertEqual(registered.__doc__, "Keep my Python identity.")
+
     def test_function_names_become_kebab_case(self):
         app = App("tool")
 
@@ -259,6 +276,35 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "--version.*<root>"):
             app.main(root)
 
+    def test_failed_command_registration_is_atomic(self):
+        app = App("tool")
+
+        def unsupported(value: dict[str, str]):
+            return value
+
+        with self.assertRaisesRegex(TypeError, "unsupported"):
+            app.command("convert")(unsupported)
+
+        app.command("convert")(lambda: "registered")
+        self.assertEqual(invoke(app, ["convert"])[0], "registered")
+
+    def test_default_identity_does_not_depend_on_equality(self):
+        class ExplosiveEquality:
+            def __eq__(self, other):
+                raise AssertionError("default equality must not be evaluated")
+
+            def __str__(self):
+                return "sentinel"
+
+        sentinel = ExplosiveEquality()
+        app = App("tool")
+
+        @app.main
+        def root(value: str = sentinel):
+            return value
+
+        self.assertIs(invoke(app, [])[0], sentinel)
+
 
 class RootCommandTests(unittest.TestCase):
     def test_empty_app_fails_clearly(self):
@@ -288,6 +334,25 @@ class RootCommandTests(unittest.TestCase):
         self.assertEqual(output.splitlines()[0], "usage: wc [-h] [--limit INT] path")
         self.assertIn("Count lines in PATH.", output)
         self.assertIn("--limit", output)
+
+    def test_short_help_alias_works(self):
+        app = App("tool")
+        app.main(lambda value="default": value)
+        code, output, error = invoke_exit(app, ("-h",))
+        self.assertEqual(code, 0)
+        self.assertEqual(output.splitlines()[0], "usage: tool [-h] [--value TEXT]")
+        self.assertEqual(error, "")
+
+    def test_explicit_app_help_overrides_root_callback_docstring(self):
+        app = App("tool", help="Application description.")
+
+        @app.main
+        def root():
+            """Callback description."""
+
+        _, output, _ = invoke_exit(app, ["--help"])
+        self.assertIn("Application description.", output)
+        self.assertNotIn("Callback description.", output)
 
     def test_positional_metavars_preserve_distinct_parameter_names(self):
         app = App("files")
@@ -326,6 +391,18 @@ class RootCommandTests(unittest.TestCase):
         self.assertEqual(invoke(app, ["--number", "2"])[0], 2)
         self.assertEqual(invoke(app, ["--number=3"])[0], 3)
         self.assertEqual(sys.argv, before)
+
+    def test_run_accepts_any_sequence_and_preserves_unicode(self):
+        app = App("问候")
+
+        @app.main
+        def greet(name: str):
+            return f"你好，{name}"
+
+        result, output, error = invoke(app, ("世界",))
+        self.assertEqual(result, "你好，世界")
+        self.assertEqual(output, "你好，世界\n")
+        self.assertEqual(error, "")
 
     def test_default_alias(self):
         app = App("tool")
@@ -431,6 +508,49 @@ class CommandRoutingTests(unittest.TestCase):
         self.assertIn("tool repo git", git_help)
         self.assertIn("status", git_help)
 
+    def test_short_help_alias_works_for_groups_and_commands(self):
+        app = App("tool")
+        repo = app.group("repo")
+        repo.command("status")(lambda: None)
+
+        for argv, expected_path in (
+            (["repo", "-h"], "tool repo"),
+            (["repo", "status", "-h"], "tool repo status"),
+        ):
+            with self.subTest(argv=argv):
+                code, output, error = invoke_exit(app, argv)
+                self.assertEqual(code, 0)
+                self.assertTrue(output.splitlines()[0].startswith(f"usage: {expected_path}"))
+                self.assertEqual(error, "")
+
+    def test_unicode_command_tree_routes_and_renders_help(self):
+        app = App("工具")
+        repo = app.group("仓库", help="仓库操作")
+
+        @repo.command("状态")
+        def status(name: str = "默认"):
+            return name
+
+        self.assertEqual(invoke(app, ["仓库", "状态", "--name", "干净"])[0], "干净")
+        _, output, _ = invoke_exit(app, ["仓库", "--help"])
+        self.assertEqual(output.splitlines()[0], "usage: 工具 仓库 [-h] [{状态}]")
+        self.assertIn("状态", output)
+        self.assertIn("仓库操作", output)
+
+    def test_sibling_parameter_names_do_not_leak_between_commands(self):
+        app = App("tool")
+
+        @app.command("count")
+        def count(value: int):
+            return value
+
+        @app.command("label")
+        def label(value: str):
+            return value
+
+        self.assertEqual(invoke(app, ["count", "7"])[0], 7)
+        self.assertEqual(invoke(app, ["label", "007"])[0], "007")
+
     def test_group_help_uses_only_first_line_of_child_description(self):
         app = App("tool")
         repo = app.group("repo")
@@ -535,6 +655,31 @@ class ParameterTests(unittest.TestCase):
             (5, 2.5, "y"),
         )
 
+    def test_negative_numbers_and_scientific_notation(self):
+        app = App("numbers")
+
+        @app.main
+        def calculate(count: int, ratio: float, offset: float = 0.0):
+            return count, ratio, offset
+
+        self.assertEqual(
+            invoke(app, ["-3", "-1.25", "--offset=-4.5e-1"])[0],
+            (-3, -1.25, -0.45),
+        )
+
+        positional = App("number")
+
+        @positional.main
+        def number(value: float):
+            return value
+
+        self.assertEqual(invoke(positional, ["--", "-1.25e2"])[0], -125.0)
+
+    def test_end_of_options_allows_flag_like_positional_text(self):
+        app = App("echo")
+        app.main(lambda value: value)
+        self.assertEqual(invoke(app, ["--", "--literal"])[0], "--literal")
+
     def test_long_option_abbreviations_are_rejected(self):
         app = App("tool")
 
@@ -598,6 +743,21 @@ class ParameterTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("--mode", error)
 
+    def test_enum_help_and_non_string_values(self):
+        class Level(enum.Enum):
+            low = 1
+            high = 2
+
+        app = App("levels")
+
+        @app.main
+        def choose(level: Level = Level.low):
+            return level
+
+        self.assertIs(invoke(app, ["--level", "2"])[0], Level.high)
+        _, output, _ = invoke_exit(app, ["--help"])
+        self.assertEqual(output.splitlines()[0], "usage: levels [-h] [--level {1,2}]")
+
     def test_list_convention_for_positional_and_option(self):
         positional = App("items")
 
@@ -614,6 +774,48 @@ class ParameterTests(unittest.TestCase):
         self.assertEqual(invoke(positional, ["1", "2", "3"])[0], [1, 2, 3])
         self.assertIsNone(invoke(optional, [])[0])
         self.assertEqual(invoke(optional, ["--values", "a", "b"])[0], ["a", "b"])
+
+    def test_list_option_single_value_equals_syntax_and_empty_occurrence(self):
+        app = App("items")
+
+        @app.main
+        def collect(values: list[int] | None = None):
+            return values
+
+        self.assertEqual(invoke(app, ["--values=1"])[0], [1])
+        code, output, error = invoke_exit(app, ["--values"])
+        self.assertEqual(code, 2)
+        self.assertEqual(output, "")
+        self.assertIn("--values", error)
+
+    def test_forced_optional_positional_uses_python_default(self):
+        app = App("show")
+
+        @app.main
+        def show(value: Annotated[str, Argument()] = "summary"):
+            return value
+
+        self.assertEqual(invoke(app, [])[0], "summary")
+        self.assertEqual(invoke(app, ["details"])[0], "details")
+
+    def test_unrelated_annotated_metadata_is_ignored(self):
+        marker = object()
+        app = App("tool")
+
+        @app.main
+        def value(number: Annotated[int, marker, Option(short="-n")] = 1):
+            return number
+
+        self.assertEqual(invoke(app, ["-n", "8"])[0], 8)
+
+    def test_forward_reference_annotation_resolves(self):
+        app = App("tool")
+
+        @app.main
+        def choose(mode: "ForwardMode" = ForwardMode.safe):
+            return mode
+
+        self.assertIs(invoke(app, ["--mode", "fast"])[0], ForwardMode.fast)
 
     def test_varargs_kwargs_and_complex_annotations_are_rejected(self):
         for func in (
@@ -700,6 +902,17 @@ class ParameterTests(unittest.TestCase):
         self.assertEqual(invoke(app, [])[0], 3)
         self.assertEqual(invoke(app, ["--count", "7"])[0], 7)
 
+    def test_repeated_annotated_option_invocations_are_independent(self):
+        app = App("tool")
+
+        @app.main
+        def retry(count: Annotated[int, Option(short="-c")] = 1):
+            return count
+
+        self.assertEqual(invoke(app, ["-c", "2"])[0], 2)
+        self.assertEqual(invoke(app, [])[0], 1)
+        self.assertEqual(invoke(app, ["--count=3"])[0], 3)
+
 
 class BooleanTests(unittest.TestCase):
     def test_false_true_and_omitted_defaults(self):
@@ -721,6 +934,21 @@ class BooleanTests(unittest.TestCase):
             return path, verbose
 
         self.assertEqual(invoke(app, ["--verbose", "README.md"])[0], ("README.md", True))
+
+    def test_multiple_boolean_flags_compose_in_any_order(self):
+        app = App("tool")
+
+        @app.main
+        def flags(path: str, dry_run: bool = False, cache: bool = True):
+            return path, dry_run, cache
+
+        expected = ("README.md", True, False)
+        self.assertEqual(
+            invoke(app, ["--dry-run", "--no-cache", "README.md"])[0], expected
+        )
+        self.assertEqual(
+            invoke(app, ["README.md", "--no-cache", "--dry-run"])[0], expected
+        )
 
 
 class OutputTests(unittest.TestCase):
@@ -744,6 +972,10 @@ class OutputTests(unittest.TestCase):
         self.assertIn("你好", output)
         self.assertIn("\n  ", output)
         self.assertEqual(json.loads(invoke(self.app_for(["甲", "乙"]), [])[1]), ["甲", "乙"])
+
+    def test_tuple_output_is_a_json_array(self):
+        output = invoke(self.app_for(("ready", 2)), [])[1]
+        self.assertEqual(json.loads(output), ["ready", 2])
 
     def test_dataclasses_paths_and_enums_serialize(self):
         class State(enum.Enum):
