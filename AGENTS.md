@@ -44,9 +44,7 @@ def summarize(
     }
 
 
-@app.group("repo", help="Repository operations")
-def repo() -> None:
-    """Manage repository files."""
+repo = app.group("repo", help="Repository operations")
 
 
 @repo.command("find")
@@ -55,9 +53,7 @@ def find_files(root: Path, pattern: str = "*.py") -> list[str]:
     return [str(path) for path in root.rglob(pattern)]
 
 
-@repo.group("git", help="Git-related operations")
-def git() -> None:
-    """Git operations."""
+git = repo.group("git", help="Git-related operations")
 
 
 @git.command("status")
@@ -118,7 +114,9 @@ The exact spelling of the single-root callable API may be `@app.main`, `@app.def
 - Target Python: Python 3.10+ initially.
 - Do not use `click`, `typer`, `fire`, `rich`, `termcolor`, `pydantic`, `docstring_parser`, `typing_extensions`, or any external package.
 - Do not shell out to external tools for parsing or help rendering.
-- Do not dynamically expose every member of a module/class/object as Fire does.
+- Do not dynamically expose modules, arbitrary objects, inherited members, or
+  method return values as Fire does. The controlled `App(CommandClass)` mode is
+  the only automatic command surface.
 - Do not require decorators for every possible use case, but decorators are the primary ergonomic API.
 - Keep the public API small and explicit.
 - Keep behavior deterministic and test-friendly.
@@ -139,7 +137,7 @@ The command tree must be explicit. Refactoring a random helper function must not
 
 ### Explicit exposure
 
-Only functions explicitly registered through `@app.command()`, `@app.group()`, `@group.command()`, `@group.group()`, or the single-command decorator are externally callable.
+Functions explicitly registered through `@app.command()`, `@group.command()`, or the single-command decorator are externally callable. Groups are explicit namespaces created with `app.group(name)` or `group.group(name)`. The controlled class mode additionally exposes public instance methods declared directly on a class passed as `App(CommandClass)`.
 
 ### Signature is the contract
 
@@ -215,7 +213,7 @@ from zerocli import App, Argument, Option
 class App:
     def __init__(
         self,
-        name: str | None = None,
+        name: str | type[Any] | None = None,
         help: str | None = None,
         version: str | None = None,
     ) -> None: ...
@@ -228,7 +226,7 @@ class App:
 
     def group(
         self,
-        name: str | None = None,
+        name: str,
         help: str | None = None,
     ) -> "Group": ...
 
@@ -263,14 +261,9 @@ class Group:
 
     def group(
         self,
-        name: str | None = None,
+        name: str,
         help: str | None = None,
     ) -> "Group": ...
-
-    def main(
-        self,
-        func: Callable[..., Any],
-    ) -> Callable[..., Any]: ...
 
     def default(
         self,
@@ -278,37 +271,23 @@ class Group:
     ) -> Callable[..., Any]: ...
 ```
 
-`Group` may be public or an implementation detail returned by `App.group()`, but users must be able to write naturally nested code:
+`Group` may be public or an implementation detail returned by `App.group()`. Nested namespaces use one explicit spelling:
 
 ```python
-@app.group("repo")
-def repo():
-    pass
+repo = app.group("repo")
 
 @repo.command("find")
 def find(...):
     pass
 
-@repo.group("git")
-def git():
-    pass
+git = repo.group("git")
 
 @git.command("status")
 def status(...):
     pass
 ```
 
-If decorator-based group callbacks create awkward semantics, an alternative explicit API is acceptable:
-
-```python
-repo = app.group("repo", help="Repository commands")
-
-@repo.command("find")
-def find(...):
-    ...
-```
-
-But the final API must support nested command registration clearly and must not execute registration callbacks during parser creation.
+Groups are never callable decorators and have no declaration callback.
 
 ### Metadata helpers
 
@@ -323,7 +302,6 @@ def Argument(
 
 
 def Option(
-    default: Any = MISSING,
     *,
     help: str | None = None,
     metavar: str | None = None,
@@ -406,6 +384,19 @@ python tool.py remove ...
 ```
 
 Root help must list both commands.
+
+### Class command collections
+
+`App(CommandClass)` accepts a class with a zero-argument constructor. Public
+instance methods declared directly in the class become flat commands. Exclude
+static methods, class methods, private methods, inherited methods, properties,
+data attributes, and members of return values.
+
+A method named `main` is the root callback and is not exposed as a `main`
+subcommand. It supports a class-only no-subcommand app and may coexist with
+other method commands; exact child names take precedence. Construct a fresh
+instance only after parsing succeeds for each `run()` call. Registration and
+help must not instantiate the class.
 
 ### Nested subcommands
 
@@ -628,6 +619,16 @@ Tests must call `app.run(argv)` and capture output using `contextlib.redirect_st
 - Unknown command fails with exit code `2`.
 - Command-level help lists its arguments.
 
+### Class mode tests
+
+- Public methods become kebab-case commands.
+- A `main` method works without a subcommand and coexists with children.
+- Constructors with parameters fail during registration.
+- Private, inherited, property, and data members are not exposed.
+- Registration and help do not instantiate the class.
+- Repeated `run()` calls receive fresh instances.
+- Static and class methods are not exposed.
+
 ### Nested command tests
 
 - `repo find` routes correctly.
@@ -687,6 +688,7 @@ Both READMEs must cover:
 - No-subcommand quick start.
 - Flat subcommand quick start.
 - Nested subcommand quick start.
+- `App(CommandClass)` and class `main` examples.
 - Group help behavior.
 - Group defaults if implemented.
 - Parameter mapping table.
@@ -740,8 +742,8 @@ reviewable contracts.
 - Validate every generated option string at registration time. Reject duplicate
   long or short flags and conflicts with `-h`, `--help`, or a configured root
   `--version`; errors must identify the command path and conflicting spelling.
-- Group declaration functions are documentation-only and must have no
-  parameters. Put executable behavior in `@group.default`.
+- Groups use only explicit `app.group(name)` and `group.group(name)` creation.
+  Put executable behavior in `@group.default`.
 - A group without a default always prints its help when invoked without a child,
   even if it has no children. Never allow a routing form such as `-- CHILD` to
   parse successfully without dispatching a callback.
@@ -749,9 +751,16 @@ reviewable contracts.
   spelling, such as `@app.command()` rather than bare `@app.command`.
 - Group command listings use only the first line of each child description;
   full multi-paragraph documentation belongs on the child's own help page.
-- Structured return values must produce strict JSON. Reject NaN and Infinity,
-  normalize nested values and mapping keys deterministically, and detect key
-  collisions after JSON key coercion rather than emitting duplicate keys.
+- Class mode is the sole controlled exception to explicit decorator
+  registration: `App(CommandClass)` exposes only public instance methods
+  declared directly in that class. Exclude static, class, private, inherited,
+  property, and non-method members; never traverse method return values.
+  Require zero-argument construction, create a fresh instance for each `run()`,
+  and never instantiate for registration or help. Keep the runnable class
+  example and its CI smoke commands current.
+- Structured return values must produce strict JSON. Reject NaN and Infinity
+  and normalize nested values through `json.dumps(default=...)`. Mapping keys
+  follow the standard `json.dumps` restrictions.
 
 Do not add a mandatory external type checker: the repository must retain its
 zero-third-party-dependency test policy. Type-focused behavior is enforced with
@@ -789,19 +798,21 @@ The project is ready when:
 4. A flat command app can register multiple commands with no direct parser setup.
 5. A nested command tree can reach at least `repo git status`.
 6. Root, group, and leaf help work.
-7. Type conversion, defaults, booleans, paths, lists, output, and errors behave as documented.
-8. `app.run(argv)` is deterministic and testable.
-9. Tests run with:
+7. `App(CommandClass)` supports method commands and an optional `main` root
+   callback without exposing unrelated members.
+8. Type conversion, defaults, booleans, paths, lists, output, and errors behave as documented.
+9. `app.run(argv)` is deterministic and testable.
+10. Tests run with:
 
    ```bash
    python -m unittest discover -v
    ```
 
-10. Documentation does not claim Fire/Typer compatibility.
-11. The implementation contains no external runtime or test dependency.
-12. English and Simplified Chinese READMEs are synchronized and mutually linked.
-13. The public doctest is non-empty and runs through unittest discovery.
-14. CI tests every supported Python minor version from 3.10 through 3.14 and
+11. Documentation does not claim Fire/Typer compatibility.
+12. The implementation contains no external runtime or test dependency.
+13. English and Simplified Chinese READMEs are synchronized and mutually linked.
+14. The public doctest is non-empty and runs through unittest discovery.
+15. CI tests every supported Python minor version from 3.10 through 3.14 and
     smoke-tests the examples.
 
 ## Recommended development order

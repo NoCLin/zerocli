@@ -10,7 +10,7 @@ The complete runtime is [`zerocli.py`](zerocli.py). It supports Python 3.10+ and
 cp zerocli.py path/to/skill/scripts/zerocli.py
 ```
 
-Only explicitly registered functions become CLI entry points. `zerocli` does not inspect or publish unrelated module members.
+Only explicitly registered functions become CLI entry points, except for the controlled `App(CommandClass)` mode documented below. `zerocli` does not inspect modules, arbitrary objects, or command return values.
 
 ## A script with no subcommands
 
@@ -65,9 +65,51 @@ def check(text: str) -> bool:
 
 Function names are converted from `snake_case` to `kebab-case`; an explicit decorator name overrides the derived name.
 
+## Organizing commands with a class
+
+Pass a zero-argument class directly to `App` to expose its public methods as flat commands:
+
+```python
+from zerocli import App
+
+class Calculator:
+    """A calculator command collection."""
+
+    def __init__(self) -> None:
+        self.offset = 1
+
+    def main(self, value: int = 0) -> int:
+        """Run without a subcommand."""
+        return value + self.offset
+
+    def add(self, left: int, right: int) -> int:
+        """Add two integers and the configured offset."""
+        return left + right + self.offset
+
+    def _audit(self) -> None:
+        pass  # Private methods are not exposed.
+
+app = App(Calculator)
+
+if __name__ == "__main__":
+    app()
+```
+
+```bash
+python calculator.py
+python calculator.py --value 4
+python calculator.py add 10 20
+```
+
+`main` is the class-mode root callback: a class with only `main` is a no-subcommand app, while `main` may also coexist with other method commands. An exact child name wins over `main` arguments, using the same rule as ordinary root defaults.
+
+`App(CommandClass)` exposes only public instance methods declared directly in that class. It excludes static methods, class methods, private methods, inherited methods, properties, data attributes, and members of returned objects. snake_case method names become kebab-case commands.
+
+The constructor must accept no arguments. A fresh instance is created for every `app.run(...)` call after parsing succeeds; registration and help never instantiate the class. The application name defaults to the class name, the class docstring describes root help, and method docstrings describe commands. See the runnable [`examples/classes.py`](examples/classes.py).
+
 ## Nested subcommands
 
-Groups are namespaces. Their zero-parameter declaration functions supply documentation but are never executed during parser construction or command dispatch. Put executable group behavior and parameters in an explicit `@group.default` callback.
+Groups are explicit namespaces created with `app.group(name)` or `group.group(name)`. Put executable group behavior and parameters in an explicit `@group.default` callback.
 
 ```python
 from pathlib import Path
@@ -75,9 +117,7 @@ from zerocli import App
 
 app = App("files", help="Utilities used by a Files skill")
 
-@app.group("repo", help="Repository operations")
-def repo():
-    """Manage repository files."""
+repo = app.group("repo", help="Repository operations")
 
 @repo.command("find")
 def find_files(root: Path, pattern: str = "*.py") -> list[str]:
@@ -103,8 +143,6 @@ python files.py repo git status --short
 ```
 
 Any group without a default invoked without a child prints its help and returns successfully, including an empty group. Unknown children use `argparse`'s conventional error output and exit status 2. A child must be written directly after its parent: placing `--` before a child is rejected rather than silently bypassing dispatch. Nesting is data-driven and has no fixed depth.
-
-The explicit form `repo = app.group("repo")` is also supported. With decorator syntax, `@app.group()` derives the group name from the declaration function.
 
 ### Group defaults
 
@@ -162,7 +200,7 @@ def upload(
     ...
 ```
 
-`Option(3)` may supply a default when the function signature has none. Defining a default both ways is rejected.
+Defaults always come from the Python function signature; `Option` only supplies CLI metadata.
 
 ## Return values
 
@@ -170,8 +208,9 @@ def upload(
 - `str`, `int`, `float`, `bool`, `Path`, enum values, and unknown objects print one line.
 - `dict`, `list`, and `tuple` print readable JSON with Unicode preserved.
 - Dataclass instances are converted with `dataclasses.asdict()` and printed as JSON.
-- Nested paths, enums, unknown values, and mapping keys are normalized recursively.
+- Nested paths, enums, and unknown values are normalized recursively.
 - Structured output is strict JSON; non-finite floats such as NaN and Infinity raise `ValueError` rather than emitting non-standard tokens.
+- Mapping keys follow `json.dumps` rules and must be `str`, `int`, `float`, `bool`, or `None`.
 
 Callback exceptions propagate unchanged. Parsing and conversion errors are produced by `argparse` on stderr with exit status 2.
 
@@ -188,4 +227,4 @@ GitHub Actions runs the complete suite and example-command smoke tests on Python
 
 ## Limitations and non-goals
 
-Version 1 deliberately rejects `*args`, `**kwargs`, positional-only parameters, complex unions, mappings as input annotations, and list element types outside the documented set. Command and group decorators require parentheses, including the empty forms `@app.command()` and `@app.group()`. It has no async dispatch, shell completion, environment/config loading, dependency injection, colors, interactive mode, arbitrary Python literal parsing, or implicit aliases. It does not dynamically traverse objects and does not claim Fire, Typer, or Click compatibility.
+Version 1 deliberately rejects `*args`, `**kwargs`, positional-only parameters, complex unions, mappings as input annotations, and list element types outside the documented set. Command decorators require parentheses, including `@app.command()`. Groups use only the explicit `app.group(name)` form. It has no async dispatch, shell completion, environment/config loading, dependency injection, colors, interactive mode, arbitrary Python literal parsing, or implicit aliases. It does not dynamically traverse objects and does not claim Fire, Typer, or Click compatibility.

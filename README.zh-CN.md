@@ -10,7 +10,7 @@
 cp zerocli.py path/to/skill/scripts/zerocli.py
 ```
 
-只有显式注册的函数才会成为 CLI 入口；`zerocli` 不会检查或发布模块内其他成员。
+除下文介绍的受控 `App(CommandClass)` 模式外，只有显式注册的函数才会成为 CLI 入口。`zerocli` 不会检查模块、任意对象或命令返回值。
 
 ## 无子命令脚本
 
@@ -65,9 +65,51 @@ def check(text: str) -> bool:
 
 函数名会从 `snake_case` 自动转换成 `kebab-case`；装饰器中显式提供的名称优先于自动名称。
 
+## 使用类组织命令
+
+将无参构造的类直接传给 `App`，即可把它的公开方法变成平铺命令：
+
+```python
+from zerocli import App
+
+class Calculator:
+    """计算器命令集合。"""
+
+    def __init__(self) -> None:
+        self.offset = 1
+
+    def main(self, value: int = 0) -> int:
+        """无需子命令即可运行。"""
+        return value + self.offset
+
+    def add(self, left: int, right: int) -> int:
+        """两数相加，再加上配置的偏移量。"""
+        return left + right + self.offset
+
+    def _audit(self) -> None:
+        pass  # 私有方法不会暴露。
+
+app = App(Calculator)
+
+if __name__ == "__main__":
+    app()
+```
+
+```bash
+python calculator.py
+python calculator.py --value 4
+python calculator.py add 10 20
+```
+
+`main` 是 class 模式的根回调：只有 `main` 的类就是无子命令应用；`main` 也可以与其他方法命令共存。精确匹配的子命令名称优先于 `main` 参数，与普通根默认回调的规则相同。
+
+`App(CommandClass)` 只暴露直接声明在该类中的公开实例方法。静态方法、类方法、私有方法、继承方法、property、数据属性以及返回对象的成员均不会暴露。snake_case 方法名会转换成 kebab-case 命令名。
+
+构造函数必须不接收任何参数。每次 `app.run(...)` 都会在解析成功后创建新实例；注册和帮助输出不会实例化类。应用名称默认使用类名，类 docstring 用于根帮助，方法 docstring 用于命令帮助。完整可运行版本见 [`examples/classes.py`](examples/classes.py)。
+
 ## 嵌套子命令
 
-Group 是命令命名空间。零参数的 Group 声明函数可以提供文档，但在构建解析器和命令分发期间绝不会被执行。可执行的 Group 行为及其参数必须放在显式的 `@group.default` 回调中。
+Group 是通过 `app.group(name)` 或 `group.group(name)` 显式创建的命令命名空间。可执行的 Group 行为及其参数必须放在显式的 `@group.default` 回调中。
 
 ```python
 from pathlib import Path
@@ -75,9 +117,7 @@ from zerocli import App
 
 app = App("files", help="Files Skill 使用的工具")
 
-@app.group("repo", help="仓库操作")
-def repo():
-    """管理仓库文件。"""
+repo = app.group("repo", help="仓库操作")
 
 @repo.command("find")
 def find_files(root: Path, pattern: str = "*.py") -> list[str]:
@@ -103,8 +143,6 @@ python files.py repo git status --short
 ```
 
 任何没有默认回调的 Group 在未指定子命令时都会输出自身帮助并成功返回，空 Group 也一样。未知子命令使用 `argparse` 的常规错误格式，并以状态码 2 退出。子节点必须直接写在父节点之后；在子节点前放置 `--` 会被拒绝，不会再静默绕过分发。嵌套路由由数据驱动，没有固定深度限制。
-
-也可以使用显式写法 `repo = app.group("repo")`。使用装饰器时，`@app.group()` 会根据声明函数名推导 Group 名称。
 
 ### Group 默认回调
 
@@ -162,7 +200,7 @@ def upload(
     ...
 ```
 
-当函数签名没有默认值时，可以使用 `Option(3)` 提供默认值。同时在签名和 `Option()` 中定义默认值会被拒绝。
+默认值始终来自 Python 函数签名；`Option` 只提供 CLI 元数据。
 
 ## 返回值
 
@@ -170,8 +208,9 @@ def upload(
 - `str`、`int`、`float`、`bool`、`Path`、Enum 值和未知对象输出为一行文本。
 - `dict`、`list` 和 `tuple` 输出为可读 JSON，并保留 Unicode 字符。
 - Dataclass 实例先通过 `dataclasses.asdict()` 转换，再输出为 JSON。
-- 嵌套的 Path、Enum、未知值和映射键会被递归规范化。
+- 嵌套的 Path、Enum 和未知值会被递归规范化。
 - 结构化输出是严格 JSON；NaN 和 Infinity 等非有限浮点数会抛出 `ValueError`，不会输出非标准 token。
+- 映射键遵循 `json.dumps` 规则，必须是 `str`、`int`、`float`、`bool` 或 `None`。
 
 用户回调抛出的异常会原样向上传播。解析和类型转换错误由 `argparse` 输出到 stderr，并以状态码 2 退出。
 
@@ -187,4 +226,4 @@ GitHub Actions 会在 Python 3.10、3.11、3.12、3.13 和 3.14 上运行完整�
 
 ## 限制与非目标
 
-版本 1 会明确拒绝 `*args`、`**kwargs`、仅位置参数、复杂 Union、作为输入注解的映射，以及文档范围外的列表元素类型。命令和 Group 装饰器必须带括号，包括空形式 `@app.command()` 和 `@app.group()`。它不提供异步分发、Shell 补全、环境变量或配置文件加载、依赖注入、彩色输出、交互模式、任意 Python 字面量解析和隐式别名；不会动态遍历对象，也不宣称兼容 Fire、Typer 或 Click。
+版本 1 会明确拒绝 `*args`、`**kwargs`、仅位置参数、复杂 Union、作为输入注解的映射，以及文档范围外的列表元素类型。命令装饰器必须带括号，包括 `@app.command()`；Group 只使用显式的 `app.group(name)` 形式。它不提供异步分发、Shell 补全、环境变量或配置文件加载、依赖注入、彩色输出、交互模式、任意 Python 字面量解析和隐式别名；不会动态遍历对象，也不宣称兼容 Fire、Typer 或 Click。

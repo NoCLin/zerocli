@@ -103,7 +103,7 @@ class RegistrationTests(unittest.TestCase):
         repo = App("other").group("repo")
         repo.default(lambda: None)
         with self.assertRaisesRegex(ValueError, "repo"):
-            repo.main(lambda: None)
+            repo.default(lambda: None)
 
     def test_docstrings_are_help_and_explicit_help_wins(self):
         app = App("tool")
@@ -120,32 +120,6 @@ class RegistrationTests(unittest.TestCase):
         self.assertIn("From the docstring.", root_help)
         self.assertIn("Explicit help.", root_help)
         self.assertNotIn("Hidden docstring.", root_help)
-
-    def test_group_decorator_does_not_execute_declaration(self):
-        app = App("tool")
-        calls = []
-
-        @app.group("repo")
-        def repo():
-            """Repository tools."""
-            calls.append("called")
-
-        @repo.command()
-        def status():
-            return "clean"
-
-        self.assertEqual(invoke(app, ["repo", "status"])[0], "clean")
-        self.assertEqual(calls, [])
-
-    def test_unnamed_group_decorator_derives_kebab_case_name(self):
-        app = App("tool")
-
-        @app.group()
-        def repo_tools():
-            """Repository tools."""
-
-        repo_tools.command("status")(lambda: "clean")
-        self.assertEqual(invoke(app, ["repo-tools", "status"])[0], "clean")
 
     def test_separate_apps_are_independent(self):
         first = App("first")
@@ -164,17 +138,6 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.command("-bad")
 
-    def test_duplicate_group_declaration_and_unbound_unnamed_group_fail(self):
-        app = App("tool")
-        unnamed = app.group()
-        with self.assertRaisesRegex(ValueError, "decorator"):
-            unnamed.command("child")
-
-        group = app.group("repo")
-        group(lambda: None)
-        with self.assertRaisesRegex(ValueError, "already declared"):
-            group(lambda: None)
-
     def test_invalid_parameter_metadata_is_rejected(self):
         with self.assertRaises(ValueError):
             Option(short="verbose")
@@ -184,12 +147,6 @@ class RegistrationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "only one"):
             App("tool").main(duplicate)
-
-        def two_defaults(value: Annotated[int, Option(2)] = 1):
-            pass
-
-        with self.assertRaisesRegex(TypeError, "both"):
-            App("tool").main(two_defaults)
 
     def test_keyword_only_argument_and_positional_bool_are_rejected(self):
         def keyword_argument(*, value: Annotated[str, Argument()]):
@@ -221,17 +178,7 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "cannot resolve annotations"):
             App("tool").main(unresolved)
 
-    def test_group_declarations_must_not_accept_parameters(self):
-        app = App("tool")
-        repo = app.group("repo")
-
-        def invalid_group(unused: str):
-            pass
-
-        with self.assertRaisesRegex(TypeError, "group declaration.*no parameters"):
-            repo(invalid_group)
-
-    def test_bare_command_and_group_decorators_have_actionable_errors(self):
+    def test_bare_command_decorators_have_actionable_errors(self):
         app = App("tool")
 
         def callback():
@@ -239,14 +186,9 @@ class RegistrationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, r"@app\.command\(\)"):
             app.command(callback)
-        with self.assertRaisesRegex(TypeError, r"@app\.group\(\)"):
-            app.group(callback)
-
         repo = app.group("repo")
         with self.assertRaisesRegex(TypeError, r"@group\.command\(\)"):
             repo.command(callback)
-        with self.assertRaisesRegex(TypeError, r"@group\.group\(\)"):
-            repo.group(callback)
 
     def test_option_flag_conflicts_fail_during_registration(self):
         with self.assertRaisesRegex(ValueError, "reserved.*-h"):
@@ -632,6 +574,205 @@ class CommandRoutingTests(unittest.TestCase):
         self.assertEqual(invoke(app, ["repo", "other"])[0], ("default", "other"))
 
 
+class ClassOrganizationTests(unittest.TestCase):
+    def test_app_class_exposes_public_methods_as_commands(self):
+        class Commands:
+            def __init__(self):
+                self.prefix = "shared"
+
+            def show_value(self, count: int, path: Path = Path(".")):
+                return self.prefix, count, path
+
+        app = App(Commands)
+        self.assertEqual(
+            invoke(app, ["show-value", "3", "--path", "src"])[0],
+            ("shared", 3, Path("src")),
+        )
+
+    def test_main_method_supports_no_subcommand_and_child_precedence(self):
+        class Commands:
+            def main(self, label: str = "root"):
+                return "main", label
+
+            def status(self, short: bool = False):
+                return "status", short
+
+        app = App(Commands)
+        self.assertEqual(invoke(app, [])[0], ("main", "root"))
+        self.assertEqual(invoke(app, ["--label", "custom"])[0], ("main", "custom"))
+        self.assertEqual(invoke(app, ["status", "--short"])[0], ("status", True))
+
+    def test_class_with_only_main_is_a_no_subcommand_app(self):
+        class Commands:
+            def main(self, value: int):
+                return value * 2
+
+        app = App(Commands)
+        self.assertEqual(invoke(app, ["4"])[0], 8)
+        _, output, _ = invoke_exit(app, ["--help"])
+        self.assertEqual(output.splitlines()[0], "usage: Commands [-h] value")
+
+    def test_class_without_main_prints_help_when_no_command_is_given(self):
+        class Commands:
+            def status(self):
+                return "clean"
+
+        result, output, error = invoke(App(Commands), [])
+        self.assertIsNone(result)
+        self.assertIn("status", output)
+        self.assertEqual(error, "")
+
+    def test_each_run_constructs_a_fresh_instance(self):
+        class Commands:
+            def __init__(self):
+                self.calls = 0
+
+            def count(self):
+                self.calls += 1
+                return self.calls
+
+        app = App(Commands)
+        self.assertEqual(invoke(app, ["count"])[0], 1)
+        self.assertEqual(invoke(app, ["count"])[0], 1)
+
+    def test_private_inherited_and_non_method_members_are_not_exposed(self):
+        property_reads = []
+
+        class Base:
+            def inherited(self):
+                return "inherited"
+
+        class Commands(Base):
+            label = "not a command"
+
+            def visible(self):
+                return "visible"
+
+            def _private(self):
+                return "private"
+
+            @property
+            def dangerous(self):
+                property_reads.append(True)
+                return "property"
+
+        app = App(Commands)
+        self.assertEqual(invoke(app, ["visible"])[0], "visible")
+        self.assertEqual(property_reads, [])
+        _, output, _ = invoke_exit(app, ["--help"])
+        self.assertNotIn("inherited", output)
+        self.assertNotIn("private", output)
+        self.assertNotIn("dangerous", output)
+        self.assertNotIn("label", output)
+
+    def test_static_and_class_methods_are_not_exposed(self):
+        class Commands:
+            factor = 3
+
+            def visible(self):
+                return "visible"
+
+            @staticmethod
+            def double(value: int):
+                return value * 2
+
+            @classmethod
+            def multiply(cls, value: int):
+                return value * cls.factor
+
+        app = App(Commands)
+        result, output, error = invoke(app, [])
+        self.assertIsNone(result)
+        self.assertIn("visible", output)
+        self.assertNotIn("double", output)
+        self.assertNotIn("multiply", output)
+        self.assertEqual(error, "")
+
+    def test_class_and_method_docstrings_drive_help(self):
+        class Commands:
+            """Class command help."""
+
+            def run(self, value: int):
+                """Run command help."""
+                return value
+
+        app = App(Commands)
+        _, root_help, _ = invoke_exit(app, ["--help"])
+        _, command_help, _ = invoke_exit(app, ["run", "--help"])
+        self.assertIn("Class command help.", root_help)
+        self.assertIn("Run command help.", root_help)
+        self.assertIn("Run command help.", command_help)
+
+    def test_constructor_is_not_called_for_registration_or_help(self):
+        constructions = []
+
+        class Commands:
+            def __init__(self):
+                constructions.append(True)
+
+            def run(self):
+                return "ok"
+
+        app = App(Commands)
+        self.assertEqual(constructions, [])
+        invoke_exit(app, ["run", "--help"])
+        self.assertEqual(constructions, [])
+        self.assertEqual(invoke_exit(app, ["missing"])[0], 2)
+        self.assertEqual(constructions, [])
+        self.assertEqual(invoke(app, ["run"])[0], "ok")
+        self.assertEqual(constructions, [True])
+
+    def test_class_registration_requires_a_zero_argument_constructor(self):
+        class Required:
+            def __init__(self, value: int):
+                self.value = value
+
+            def run(self):
+                return self.value
+
+        with self.assertRaisesRegex(TypeError, "zero-argument constructor"):
+            App(Required)
+
+        class Optional:
+            def __init__(self, value: int = 1):
+                self.value = value
+
+            def run(self):
+                return self.value
+
+        with self.assertRaisesRegex(TypeError, "zero-argument constructor"):
+            App(Optional)
+
+    def test_class_registration_rejects_an_empty_command_surface(self):
+        class Empty:
+            value = 1
+
+        with self.assertRaisesRegex(ValueError, "no public command methods"):
+            App(Empty)
+
+    def test_class_mode_rejects_a_root_default(self):
+        class Commands:
+            def run(self):
+                return "run"
+
+        app = App(Commands)
+        with self.assertRaisesRegex(ValueError, "class-mode"):
+            app.main(lambda: None)
+
+        with self.assertRaisesRegex(ValueError, "class-mode"):
+            app.command("extra")
+        with self.assertRaisesRegex(ValueError, "class-mode"):
+            app.group("extra")
+
+    def test_class_main_checks_the_reserved_version_option(self):
+        class Commands:
+            def main(self, version: str = "local"):
+                return version
+
+        with self.assertRaisesRegex(ValueError, "--version.*<root>"):
+            App(Commands, version="tool 1.0")
+
+
 class ParameterTests(unittest.TestCase):
     def test_required_scalar_positionals_and_unannotated_input(self):
         app = App("tool")
@@ -892,16 +1033,6 @@ class ParameterTests(unittest.TestCase):
 
         self.assertEqual(invoke(app, ["-数", "7"])[0], 7)
 
-    def test_option_metadata_can_supply_default(self):
-        app = App("tool")
-
-        @app.main
-        def retry(count: Annotated[int, Option(3)]):
-            return count
-
-        self.assertEqual(invoke(app, [])[0], 3)
-        self.assertEqual(invoke(app, ["--count", "7"])[0], 7)
-
     def test_repeated_annotated_option_invocations_are_independent(self):
         app = App("tool")
 
@@ -1004,28 +1135,9 @@ class OutputTests(unittest.TestCase):
         nested = json.loads(invoke(self.app_for({"value": Custom()}), [])[1])
         self.assertEqual(nested, {"value": "custom"})
 
-    def test_nested_mapping_keys_are_normalized(self):
-        class Custom:
-            def __str__(self):
-                return "custom-key"
-
-        value = {Path("file.txt"): {Custom(): Path("nested.txt")}}
-        output = invoke(self.app_for(value), [])[1]
-        self.assertEqual(
-            json.loads(output), {"file.txt": {"custom-key": "nested.txt"}}
-        )
-
-    def test_mapping_key_collisions_after_json_coercion_are_rejected(self):
-        for native, text_key in (
-            (1, "1"),
-            (1.5, "1.5"),
-            (True, "true"),
-            (None, "null"),
-        ):
-            with self.subTest(native=native), self.assertRaisesRegex(
-                ValueError, "JSON key collision"
-            ):
-                invoke(self.app_for({native: "native", text_key: "text"}), [])
+    def test_unsupported_mapping_keys_use_jsons_standard_error(self):
+        with self.assertRaises(TypeError):
+            invoke(self.app_for({Path("file.txt"): "value"}), [])
 
     def test_non_finite_numbers_are_rejected_in_json_output(self):
         with self.assertRaisesRegex(ValueError, "JSON compliant"):

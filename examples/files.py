@@ -22,9 +22,7 @@ def summarize(path: Path, max_lines: int = 20) -> dict:
     }
 
 
-@app.group("repo", help="Repository operations")
-def repo():
-    """Manage repository files."""
+repo = app.group("repo", help="Repository operations")
 
 
 @repo.default

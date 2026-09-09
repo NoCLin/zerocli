@@ -37,3 +37,8 @@ jobs:
           python -m examples.files repo --help
           python -m examples.files repo find examples --pattern '*.py'
           python -m examples.files repo git status --short
+          python -m examples.classes --help
+          python -m examples.classes --verbose
+          python -m examples.classes summary
+          python -m examples.classes find --pattern '*.md' --limit 1
+          python -m examples.classes status --short

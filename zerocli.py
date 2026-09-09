@@ -1,7 +1,8 @@
 """zerocli: a single-file, standard-library-only CLI helper.
 
-Only callables registered with :class:`App` or a returned :class:`Group` are
-exposed. Function signatures define their command-line parameters.
+Only explicitly registered callbacks and controlled public instance methods from
+``App(CommandClass)`` are exposed. Callable signatures define their
+command-line parameters.
 
 The root-callback API is directly testable without changing ``sys.argv``:
 
@@ -37,18 +38,12 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 
-class _Missing:
-    def __repr__(self) -> str:
-        return "MISSING"
-
-
-MISSING = _Missing()
+_MISSING = object()
 
 
 @dataclass(frozen=True)
 class _ParameterMetadata:
     kind: Literal["argument", "option"]
-    default: Any = MISSING
     help: str | None = None
     metavar: str | None = None
     short: str | None = None
@@ -60,7 +55,6 @@ def Argument(*, help: str | None = None, metavar: str | None = None) -> Any:
 
 
 def Option(
-    default: Any = MISSING,
     *,
     help: str | None = None,
     metavar: str | None = None,
@@ -76,9 +70,7 @@ def Option(
         raise ValueError("an option short name must look like '-x'")
     if short == "-h":
         raise ValueError("reserved option '-h' cannot be used as a short name")
-    return _ParameterMetadata(
-        "option", default=default, help=help, metavar=metavar, short=short
-    )
+    return _ParameterMetadata("option", help=help, metavar=metavar, short=short)
 
 
 @dataclass
@@ -99,13 +91,12 @@ class _Parameter:
 @dataclass
 class _Node:
     name: str
-    kind: Literal["root", "group", "command"]
     parent: _Node | None = None
     help: str | None = None
     callback: Callable[..., Any] | None = None
     parameters: list[_Parameter] = field(default_factory=list)
     children: dict[str, _Node] = field(default_factory=dict)
-    declaration: Callable[..., Any] | None = None
+    member_name: str | None = None
 
     @property
     def path(self) -> str:
@@ -167,14 +158,22 @@ def _validate_scalar(annotation: Any) -> None:
     raise TypeError(f"unsupported parameter annotation: {annotation!r}")
 
 
-def _parameters_for(func: Callable[..., Any], path: str) -> list[_Parameter]:
+def _parameters_for(
+    func: Callable[..., Any],
+    path: str,
+    *,
+    skip_first: bool = False,
+) -> list[_Parameter]:
     try:
         hints = typing.get_type_hints(func, include_extras=True)
     except Exception as error:
         raise TypeError(f"cannot resolve annotations for {path or '<root>'}: {error}") from error
 
     result: list[_Parameter] = []
-    for raw in inspect.signature(func).parameters.values():
+    raw_parameters = list(inspect.signature(func).parameters.values())
+    if skip_first:
+        raw_parameters = raw_parameters[1:]
+    for raw in raw_parameters:
         if raw.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             raise TypeError(
                 f"{path or '<root>'}: parameter {raw.name!r} uses *args or **kwargs; "
@@ -207,18 +206,10 @@ def _parameters_for(func: Callable[..., Any], path: str) -> list[_Parameter]:
                 ) from error
 
         signature_default = raw.default
-        metadata_default = metadata.default if metadata is not None else MISSING
-        if signature_default is not inspect.Parameter.empty and metadata_default is not MISSING:
-            raise TypeError(
-                f"{path or '<root>'}: parameter {raw.name!r} defines a default both "
-                "in its signature and in Option()"
-            )
         if signature_default is not inspect.Parameter.empty:
             default = signature_default
-        elif metadata_default is not MISSING:
-            default = metadata_default
         else:
-            default = MISSING
+            default = _MISSING
 
         forced_kind = metadata.kind if metadata is not None else None
         if raw.kind is inspect.Parameter.KEYWORD_ONLY and forced_kind == "argument":
@@ -228,14 +219,14 @@ def _parameters_for(func: Callable[..., Any], path: str) -> list[_Parameter]:
         is_option = (
             raw.kind is inspect.Parameter.KEYWORD_ONLY
             or forced_kind == "option"
-            or (default is not MISSING and forced_kind != "argument")
+            or (default is not _MISSING and forced_kind != "argument")
         )
         is_bool = annotation is bool
         if is_bool and not is_option:
             raise TypeError(
                 f"{path or '<root>'}: boolean parameter {raw.name!r} must be an option"
             )
-        if is_bool and default is MISSING:
+        if is_bool and default is _MISSING:
             raise TypeError(
                 f"{path or '<root>'}: required boolean parameter {raw.name!r} has no "
                 "representable CLI form; give it a default"
@@ -249,7 +240,7 @@ def _parameters_for(func: Callable[..., Any], path: str) -> list[_Parameter]:
                 is_list=is_list,
                 is_bool=is_bool,
                 is_option=is_option,
-                required=default is MISSING,
+                required=default is _MISSING,
                 default=default,
                 help=metadata.help if metadata is not None else None,
                 metavar=metadata.metavar if metadata is not None else None,
@@ -331,7 +322,7 @@ def _add_parameter(parser: argparse.ArgumentParser, parameter: _Parameter) -> No
             names.insert(0, parameter.short)
         common["dest"] = parameter.name
         common["required"] = parameter.required
-        if parameter.default is not MISSING:
+        if parameter.default is not _MISSING:
             common["default"] = parameter.default
         if parameter.is_bool:
             common["action"] = "store_false" if parameter.default is True else "store_true"
@@ -349,7 +340,7 @@ def _add_parameter(parser: argparse.ArgumentParser, parameter: _Parameter) -> No
         common["nargs"] = "+" if parameter.required else "*"
     elif not parameter.required:
         common["nargs"] = "?"
-    if parameter.default is not MISSING:
+    if parameter.default is not _MISSING:
         common["default"] = parameter.default
     parser.add_argument(parameter.name, **common)
 
@@ -361,67 +352,99 @@ class Group:
         self._app = app
         self._node = node
 
-    def __call__(self, func: Callable[..., Any]) -> Group:
-        if self._node.declaration is not None:
-            raise ValueError(f"group {self._node.path!r} is already declared")
-        if inspect.signature(func).parameters:
-            location = self._node.path or _kebab_case(func.__name__)
-            raise TypeError(
-                f"{location}: group declaration must accept no parameters; "
-                "use @group.default for executable group behavior"
-            )
-        if not self._node.name:
-            self._node.name = _validate_name(_kebab_case(func.__name__), what="group")
-            assert self._node.parent is not None
-            self._app._add_child(self._node.parent, self._node)
-        self._node.declaration = func
-        if self._node.help is None:
-            self._node.help = inspect.getdoc(func)
-        return self
-
-    def _require_name(self) -> None:
-        if not self._node.name:
-            raise ValueError("an unnamed group must first be used as a decorator")
-
     def command(
         self, name: str | None = None, help: str | None = None
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        self._require_name()
         if callable(name):
             raise TypeError(
                 "@group.command must be called with parentheses; use @group.command()"
             )
         return self._app._command_decorator(self._node, name, help)
 
-    def group(self, name: str | None = None, help: str | None = None) -> Group:
-        self._require_name()
-        if callable(name):
-            raise TypeError("@group.group must be called with parentheses; use @group.group()")
+    def group(self, name: str, help: str | None = None) -> Group:
         return self._app._make_group(self._node, name, help)
 
-    def main(self, func: Callable[..., Any]) -> Callable[..., Any]:
-        self._require_name()
+    def default(self, func: Callable[..., Any]) -> Callable[..., Any]:
         self._app._set_default(self._node, func)
         return func
 
-    default = main
-
 
 class App:
-    """An explicitly registered command-line application."""
+    """An explicit command application or zero-argument class command collection."""
 
     def __init__(
         self,
-        name: str | None = None,
+        name: str | type[Any] | None = None,
         help: str | None = None,
         version: str | None = None,
     ) -> None:
-        if name is not None:
-            _validate_name(name, what="application")
-        self.name = name
+        component_class = name if inspect.isclass(name) else None
+        application_name = (
+            component_class.__name__ if component_class is not None else name
+        )
+        if application_name is not None:
+            _validate_name(application_name, what="application")
+        if component_class is not None and help is None:
+            help = inspect.getdoc(component_class)
+        self.name = application_name
         self.help = help
         self.version = version
-        self._root = _Node(name or "", "root", help=help)
+        self._root = _Node(application_name or "", help=help)
+        self._component_class: type[Any] | None = component_class
+        if component_class is not None:
+            self._register_class(component_class)
+
+    def _register_class(self, component_class: type[Any]) -> None:
+        try:
+            constructor_parameters = inspect.signature(component_class).parameters
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                f"cannot inspect constructor for class {component_class.__name__!r}: "
+                f"{error}"
+            ) from error
+        if constructor_parameters:
+            raise TypeError(
+                f"class {component_class.__name__!r} must have a zero-argument "
+                "constructor"
+            )
+
+        for member_name, descriptor in component_class.__dict__.items():
+            if member_name.startswith("_"):
+                continue
+            if not inspect.isfunction(descriptor):
+                continue
+            callback = descriptor
+
+            is_main = member_name == "main"
+            command_name = (
+                ""
+                if is_main
+                else _validate_name(_kebab_case(member_name), what="command")
+            )
+            node = _Node(
+                command_name,
+                parent=None if is_main else self._root,
+                help=inspect.getdoc(callback),
+                callback=callback,
+                member_name=member_name,
+            )
+            parameters = _parameters_for(callback, node.path, skip_first=True)
+            reserved = ("--version",) if is_main and self.version is not None else ()
+            _validate_option_strings(parameters, node.path, reserved=reserved)
+            node.parameters = parameters
+            if is_main:
+                self._root.callback = callback
+                self._root.parameters = parameters
+                self._root.member_name = member_name
+                if self.help is None:
+                    self._root.help = inspect.getdoc(callback)
+            else:
+                self._add_child(self._root, node)
+
+        if self._root.callback is None and not self._root.children:
+            raise ValueError(
+                f"class {component_class.__name__!r} has no public command methods"
+            )
 
     def _add_child(self, parent: _Node, child: _Node) -> None:
         if child.name in parent.children:
@@ -441,7 +464,6 @@ class App:
             )
             node = _Node(
                 command_name,
-                "command",
                 parent=parent,
                 help=help if help is not None else inspect.getdoc(func),
                 callback=func,
@@ -457,27 +479,28 @@ class App:
     def command(
         self, name: str | None = None, help: str | None = None
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        if self._component_class is not None:
+            raise ValueError("a class-mode application cannot register commands")
         if callable(name):
             raise TypeError(
                 "@app.command must be called with parentheses; use @app.command()"
             )
         return self._command_decorator(self._root, name, help)
 
-    def _make_group(
-        self, parent: _Node, name: str | None, help: str | None
-    ) -> Group:
-        group_name = _validate_name(name, what="group") if name is not None else ""
-        node = _Node(group_name, "group", parent=parent, help=help)
-        if group_name:
-            self._add_child(parent, node)
+    def _make_group(self, parent: _Node, name: str, help: str | None) -> Group:
+        group_name = _validate_name(name, what="group")
+        node = _Node(group_name, parent=parent, help=help)
+        self._add_child(parent, node)
         return Group(self, node)
 
-    def group(self, name: str | None = None, help: str | None = None) -> Group:
-        if callable(name):
-            raise TypeError("@app.group must be called with parentheses; use @app.group()")
+    def group(self, name: str, help: str | None = None) -> Group:
+        if self._component_class is not None:
+            raise ValueError("a class-mode application cannot register groups")
         return self._make_group(self._root, name, help)
 
     def _set_default(self, node: _Node, func: Callable[..., Any]) -> None:
+        if node is self._root and self._component_class is not None:
+            raise ValueError("a class-mode application cannot also have a root default")
         if node.callback is not None:
             location = node.path or "<root>"
             raise ValueError(f"a default callback is already registered at {location!r}")
@@ -559,7 +582,11 @@ class App:
         namespace = parser.parse_args(remaining)
         if node.callback is None:
             parser.error("a subcommand must be specified directly (without '--')")
-        result = node.callback(**vars(namespace))
+        callback = node.callback
+        if self._component_class is not None and node.member_name is not None:
+            instance = self._component_class()
+            callback = getattr(instance, node.member_name)
+        result = callback(**vars(namespace))
         _render_result(result)
         return result
 
@@ -567,43 +594,13 @@ class App:
         self.run()
 
 
-def _json_key(value: Any) -> str:
-    if isinstance(value, enum.Enum):
-        value = value.value
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, str):
-        return value
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return json.dumps(value, allow_nan=False)
-    return str(value)
-
-
-def _json_value(value: Any) -> Any:
+def _json_default(value: Any) -> Any:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _json_value(dataclasses.asdict(value))
+        return dataclasses.asdict(value)
     if isinstance(value, enum.Enum):
-        return _json_value(value.value)
+        return value.value
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, dict):
-        normalized: dict[Any, Any] = {}
-        for key, item in value.items():
-            normalized_key = _json_key(key)
-            if normalized_key in normalized:
-                raise ValueError(
-                    f"JSON key collision after normalization: {normalized_key!r}"
-                )
-            normalized[normalized_key] = _json_value(item)
-        return normalized
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
     return str(value)
 
 
@@ -618,11 +615,15 @@ def _render_result(value: Any) -> None:
     ):
         print(
             json.dumps(
-                _json_value(value), ensure_ascii=False, indent=2, allow_nan=False
+                value,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+                default=_json_default,
             )
         )
         return
     print(value)
 
 
-__all__ = ["App", "Argument", "Group", "MISSING", "Option"]
+__all__ = ["App", "Argument", "Group", "Option"]
